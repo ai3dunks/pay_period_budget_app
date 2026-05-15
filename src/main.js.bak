@@ -1,0 +1,2565 @@
+import './styles.css';
+import {
+  parseLocalDate,
+  generateBudgetPeriods,
+  getCurrentBudgetPeriod,
+  getSelectedBudgetPeriod,
+  setSelectedBudgetPeriod,
+  isDateInBudgetPeriod,
+} from './utils/budgetPeriods.js';
+import { renderPaycheckPlanner } from './ui/paycheckPlanner.js';
+import { renderRecurringBills } from './ui/recurringBills.js';
+import { renderTransfers } from './ui/transfers.js';
+import { renderDashboard as renderDashboardTab } from './ui/dashboard.js';
+import { renderHistory } from './ui/history.js';
+import { renderCloseout } from './ui/closeout.js';
+import { renderDataHealth } from './ui/dataHealth.js';
+import { renderReports } from './ui/reports.js';
+import { fetchCloseoutRecord } from './utils/closeoutClient.js';
+import { renderBackupSection } from './ui/backup.js';
+
+const BACKEND = 'http://localhost:8787';
+
+// ─────────────────────────────────────────────────────────────────────────
+
+const tabs = [
+  { id: 'dashboard', label: 'Dashboard' },
+  { id: 'reports', label: 'Reports' },
+  { id: 'data-health', label: 'Data Health' },
+  { id: 'paycheck-planner', label: 'Paycheck Planner' },
+  { id: 'transactions', label: 'Transactions' },
+  { id: 'recurring-bills', label: 'Recurring Bills' },
+  { id: 'expenses', label: 'Expenses' },
+  { id: 'transfers', label: 'Transfers' },
+  { id: 'history', label: 'History' },
+  { id: 'closeout', label: 'Closeout' },
+  { id: 'master-lists', label: 'Master Lists' },
+  { id: 'settings', label: 'Settings' },
+];
+
+const TRANSACTION_TYPES = [
+  'Income',
+  'Expense',
+  'Bills',
+  'Wants',
+  'Transfer',
+  'Debt Payment',
+  'Ignore',
+];
+
+const FALLBACK_CATEGORY_BY_TYPE = {
+  Income: ['Paycheck', 'Bonus', 'Other Income'],
+  Expense: ['Groceries', 'Gas', 'Fast Food', 'Kids', 'Diapers/Wipes', 'Home Essentials', 'Car Maintenance', 'School', 'Medical', 'Misc'],
+  Bills: ['Needs', 'Wants', 'Debts/Savings'],
+  Wants: ['Josh', 'Taylor', 'Split'],
+  Transfer: ['In', 'Out'],
+  'Debt Payment': ['Additional Payment'],
+  Ignore: ['Ignore'],
+};
+
+const MASTER_LIST_TABS = [];
+MASTER_LIST_TABS.push({ id: 'expense', label: 'Expense List' });
+MASTER_LIST_TABS.push({ id: 'recurring-bills', label: 'Recurring Bills List' });
+
+const pageMeta = {
+  dashboard: {
+    title: 'Dashboard',
+    description: 'Your budget overview will be rebuilt here.',
+  },
+  reports: {
+    title: 'Reports + Trends',
+    description: 'Compare pay periods, spending, bills, transfers, and income.',
+  },
+  'data-health': {
+    title: 'Data Health Center',
+    description: 'Review data quality checks, score, and prioritized issues for this budget period.',
+  },
+  transactions: {
+    title: 'Transactions',
+    description: 'Review synced Plaid transactions.',
+  },
+  settings: {
+    title: 'Settings',
+    description: 'Connect Plaid and manage app setup.',
+  },
+  'paycheck-planner': {
+    title: 'Paycheck Planner',
+    description: 'Plan this paycheck before money leaves the account.',
+  },
+  'recurring-bills': {
+    title: 'Recurring Bills',
+    description: 'Review due bills, paid status, and period-specific progress.',
+  },
+  expenses: {
+    title: 'Expenses',
+    description: 'Compare actual Plaid spending against expense category targets for the selected period.',
+  },
+  transfers: {
+    title: 'Transfers',
+    description: 'Plan where this paycheck needs to move.',
+  },
+  history: {
+    title: 'History',
+    description: 'Review saved pay period snapshots.',
+  },
+  'master-lists': {
+    title: 'Master Lists',
+    description: 'Manage expense and recurring bill templates that power planning views.',
+  },
+};
+
+let activeTab = 'dashboard';
+const BUDGET_ANCHOR_DATE = '2026-05-08';
+const PERIOD_AWARE_TABS = new Set([
+  'dashboard',
+  'reports',
+  'data-health',
+  'transactions',
+  'paycheck-planner',
+  'recurring-bills',
+  'expenses',
+  'transfers',
+  'history',
+  'closeout',
+]);
+
+const budgetPeriods = generateBudgetPeriods(BUDGET_ANCHOR_DATE, 16, 16);
+let selectedBudgetPeriodId = resolveSelectedBudgetPeriodId();
+let transactionsViewMode = 'period';
+const transactionsFilters = {
+  search: '',
+  type: 'All',
+  category: 'All',
+  reviewed: 'All',
+  showIgnored: false,
+};
+let transactionsCache = [];
+let pendingReviewTransactionId = null;
+let reviewModalTransactionId = null;
+let reviewDraft = null;
+let transactionsMessage = '';
+let transactionsMessageType = 'error';
+let rulesManagerMessage = '';
+let rulesManagerMessageType = 'success';
+let ruleEditorState = null;
+let masterListsData = {
+  loaded: false,
+  error: '',
+  expenseList: [],
+  recurringBillsList: [],
+};
+const masterListsUiState = {
+  activeTab: 'expense',
+  editingId: null,
+  editingType: '',
+  message: '',
+  error: '',
+};
+
+function resolveSelectedBudgetPeriodId() {
+  const stored = getSelectedBudgetPeriod();
+  if (stored && budgetPeriods.some((period) => period.id === stored)) {
+    return stored;
+  }
+  const current = getCurrentBudgetPeriod(budgetPeriods, new Date());
+  return (current || budgetPeriods[0]).id;
+}
+
+function getActiveBudgetPeriod() {
+  const selected = budgetPeriods.find((period) => period.id === selectedBudgetPeriodId);
+  if (selected) return selected;
+  const current = getCurrentBudgetPeriod(budgetPeriods, new Date());
+  return current || budgetPeriods[0];
+}
+
+function applySelectedBudgetPeriod(periodId) {
+  if (!periodId || !budgetPeriods.some((period) => period.id === periodId)) {
+    selectedBudgetPeriodId = resolveSelectedBudgetPeriodId();
+    return;
+  }
+  selectedBudgetPeriodId = periodId;
+  setSelectedBudgetPeriod(periodId);
+  window.dispatchEvent(new CustomEvent('budget:period-changed', { detail: { periodId } }));
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
+
+function normalizeListName(name) {
+  return String(name || '').trim().replace(/\s+/g, ' ');
+}
+
+function toNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function normalizeMatchWordsInput(value) {
+  const source = Array.isArray(value) ? value : String(value || '').split(',');
+  const seen = new Set();
+  const out = [];
+  source.forEach((word) => {
+    const trimmed = String(word || '').trim();
+    if (!trimmed) return;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(trimmed);
+  });
+  return out;
+}
+
+function mapMasterListResponse(data) {
+  return {
+    loaded: true,
+    error: '',
+    expenseList: Array.isArray(data.expenseList)
+      ? data.expenseList.map((item) => ({
+          ...item,
+          name: normalizeListName(item.name),
+          budgetAmount: toNumber(item.budgetAmount, 0),
+          active: !!item.active,
+          notes: item.notes || '',
+          displayOrder: item.displayOrder ?? 0,
+        }))
+      : [],
+    recurringBillsList: Array.isArray(data.recurringBillsList)
+      ? data.recurringBillsList.map((item) => ({
+          ...item,
+          name: normalizeListName(item.name),
+          category: String(item.category || '').trim(),
+          dueDay: parseInt(item.dueDay, 10) || 1,
+          amount: toNumber(item.amount, 0),
+          paidFrom: item.paidFrom || '',
+          matchWords: normalizeMatchWordsInput(item.matchWords || []),
+          autopay: !!item.autopay,
+          active: !!item.active,
+          notes: item.notes || '',
+          displayOrder: item.displayOrder ?? 0,
+        }))
+      : [],
+  };
+}
+
+async function fetchMasterLists(forceReload) {
+  if (masterListsData.loaded && !forceReload) return masterListsData;
+  try {
+    const res = await fetch(BACKEND + '/api/master-lists');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    masterListsData = mapMasterListResponse(data);
+  } catch (err) {
+    console.error('Failed to load master lists:', err);
+    masterListsData = {
+      ...masterListsData,
+      loaded: false,
+      error: 'Backend not running on http://localhost:8787.',
+    };
+  }
+  return masterListsData;
+}
+
+async function fetchTransactions() {
+  const res = await fetch(BACKEND + '/api/transactions');
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const rows = await res.json();
+  transactionsCache = rows;
+  return rows;
+}
+
+async function fetchRules() {
+  const res = await fetch(BACKEND + '/api/rules');
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return await res.json();
+}
+
+async function createRule(rule) {
+  const res = await fetch(BACKEND + '/api/rules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(rule),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to create rule.');
+  return data;
+}
+
+async function patchRule(id, updates) {
+  const res = await fetch(BACKEND + '/api/rules/' + encodeURIComponent(id), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to update rule.');
+  return data;
+}
+
+async function disableRule(id) {
+  const res = await fetch(BACKEND + '/api/rules/' + encodeURIComponent(id), {
+    method: 'DELETE',
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to disable rule.');
+  return data;
+}
+
+async function runRulesApplyRequest(dryRun, periodId) {
+  const res = await fetch(BACKEND + '/api/rules/apply', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      dryRun,
+      periodId: periodId || undefined,
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to apply rules.');
+  return data;
+}
+
+function normalizeExpenseCategoryKey(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function formatCurrency(value) {
+  return '$' + Math.abs(Number(value || 0)).toFixed(2);
+}
+
+function formatSignedCurrency(value) {
+  const amount = Number(value || 0);
+  const prefix = amount < 0 ? '-' : amount > 0 ? '+' : '';
+  return prefix + '$' + Math.abs(amount).toFixed(2);
+}
+
+function getActiveExpenseCategories() {
+  return (masterListsData.expenseList || [])
+    .filter((item) => item.active)
+    .map((item) => ({
+      ...item,
+      budgetAmount: Number(item.budgetAmount || 0),
+      key: normalizeExpenseCategoryKey(item.name),
+    }))
+    .filter((item) => item.key);
+}
+
+function buildExpenseCategoryLookup(categories) {
+  const lookup = new Map();
+  categories.forEach((item) => {
+    lookup.set(item.key, item);
+  });
+  return lookup;
+}
+
+function isExpenseTransaction(row, period) {
+  return (row.type || '') === 'Expense' && !row.ignored && isDateInBudgetPeriod(row.date, period);
+}
+
+function isTransactionNeedsReview(row) {
+  return !(row.type || '').trim() && !row.reviewed && !row.ignored;
+}
+
+function isTransactionUncategorizedExpense(row, activeCategoryLookup) {
+  if ((row.type || '') !== 'Expense' || row.ignored) return false;
+  const categoryKey = normalizeExpenseCategoryKey(row.category);
+  if (!categoryKey) return true;
+  if (categoryKey === 'uncategorized') return true;
+  return !activeCategoryLookup.has(categoryKey);
+}
+
+function sortByDateDesc(a, b) {
+  const aTime = new Date(a.date || 0).getTime();
+  const bTime = new Date(b.date || 0).getTime();
+  if (aTime !== bTime) return bTime - aTime;
+  return String(a.name || '').localeCompare(String(b.name || ''));
+}
+
+function renderBadge(label, className) {
+  return '<span class="' + className + '">' + escapeHtml(label) + '</span>';
+}
+
+function getCategoryOptionsForType(type) {
+  if (type === 'Expense') {
+    const expenseNames = (masterListsData.expenseList || [])
+      .filter((item) => item.active)
+      .map((item) => item.name)
+      .filter(Boolean);
+    return expenseNames.length ? expenseNames : FALLBACK_CATEGORY_BY_TYPE.Expense;
+  }
+
+  if (type === 'Bills') return ['Needs', 'Wants', 'Debts/Savings'];
+  if (type === 'Wants') return ['Josh', 'Taylor', 'Split'];
+  if (type === 'Transfer') return ['In', 'Out'];
+  if (type === 'Debt Payment') return ['Additional Payment'];
+  if (type === 'Income') return ['Paycheck', 'Bonus', 'Other Income'];
+  if (type === 'Ignore') return ['Ignore'];
+  return FALLBACK_CATEGORY_BY_TYPE[type] || [];
+}
+
+function defaultCategoryForType(type, amount) {
+  if (type === 'Expense') {
+    const expenseNames = getCategoryOptionsForType('Expense');
+    return expenseNames[0] || 'Misc';
+  }
+  if (type === 'Wants') return 'Split';
+  if (type === 'Transfer') return amount >= 0 ? 'In' : 'Out';
+  if (type === 'Income') return 'Other Income';
+  if (type === 'Bills') return 'Needs';
+  if (type === 'Debt Payment') return 'Additional Payment';
+  if (type === 'Ignore') return 'Ignore';
+  return '';
+}
+
+function normalizeReviewDraft(transaction, draft) {
+  const next = {
+    type: draft.type || transaction.type || 'Expense',
+    category: draft.category || transaction.category || '',
+    notes: draft.notes ?? transaction.notes ?? '',
+    reviewed: draft.reviewed === undefined ? !!transaction.reviewed : !!draft.reviewed,
+    ignored: draft.ignored === undefined ? !!transaction.ignored : !!draft.ignored,
+  };
+
+  const validCategories = getCategoryOptionsForType(next.type);
+  const shouldCoerceInvalidCategory = !!draft.forceCoerceCategory;
+  if (!validCategories.includes(next.category) && shouldCoerceInvalidCategory) {
+    next.category = defaultCategoryForType(next.type, Number(transaction.amount || 0));
+    if (!validCategories.includes(next.category)) {
+      next.category = validCategories[0] || '';
+    }
+  }
+  if (next.type === 'Ignore') {
+    next.category = 'Ignore';
+    next.ignored = true;
+  }
+  return next;
+}
+
+function normalizeRuleDraft(draft = {}) {
+  const next = {
+    id: draft.id || '',
+    mode: draft.mode || 'create',
+    source: draft.source || activeTab,
+    sourceTransactionId: draft.sourceTransactionId || '',
+    sourceTransactionLabel: draft.sourceTransactionLabel || '',
+    name: String(draft.name || draft.match_value || '').trim(),
+    enabled: draft.enabled === undefined ? true : !!draft.enabled,
+    match_type: String(draft.match_type || 'contains').trim(),
+    match_value: String(draft.match_value || '').trim(),
+    account_id: String(draft.account_id || '').trim(),
+    amount_min: draft.amount_min ?? '',
+    amount_max: draft.amount_max ?? '',
+    set_type: String(draft.set_type || 'Expense').trim(),
+    set_category: String(draft.set_category || '').trim(),
+    set_ignored: !!draft.set_ignored,
+    apply_to_unreviewed_only: draft.apply_to_unreviewed_only === undefined ? true : !!draft.apply_to_unreviewed_only,
+  };
+
+  if (next.set_ignored || next.set_type === 'Ignore') {
+    next.set_ignored = true;
+    next.set_type = 'Ignore';
+    next.set_category = 'Ignore';
+    return next;
+  }
+
+  const categories = getCategoryOptionsForType(next.set_type);
+  if (!categories.includes(next.set_category)) {
+    next.set_category = defaultCategoryForType(next.set_type, 0);
+    if (!categories.includes(next.set_category)) {
+      next.set_category = categories[0] || '';
+    }
+  }
+
+  return next;
+}
+
+function openRuleEditor(options = {}) {
+  const transaction = options.transaction || null;
+  const seed = options.rule
+    ? {
+        ...options.rule,
+        mode: 'edit',
+        source: options.source || activeTab,
+      }
+    : {
+        mode: 'create',
+        source: options.source || activeTab,
+      };
+
+  if (transaction) {
+    seed.sourceTransactionId = transaction.id;
+    seed.sourceTransactionLabel = transaction.merchant_name || transaction.name || '';
+    seed.name = seed.name || transaction.merchant_name || transaction.name || '';
+    seed.match_value = seed.match_value || transaction.merchant_name || transaction.name || '';
+    seed.match_type = seed.match_type || (transaction.merchant_name ? 'merchant_contains' : 'contains');
+    seed.account_id = seed.account_id || transaction.account_id || '';
+    if (!options.rule && reviewDraft) {
+      seed.set_type = reviewDraft.type;
+      seed.set_category = reviewDraft.category;
+      seed.set_ignored = !!reviewDraft.ignored;
+    }
+  }
+
+  ruleEditorState = {
+    draft: normalizeRuleDraft(seed),
+    error: '',
+  };
+
+  applyBudgetPeriodToActivePage();
+}
+
+function closeRuleEditor() {
+  ruleEditorState = null;
+  applyBudgetPeriodToActivePage();
+}
+
+function getRuleEditorAccountOptions(accounts = []) {
+  const unique = new Map();
+  (accounts || []).forEach((account) => {
+    const id = String(account?.id || account?.account_id || '').trim();
+    if (!id || unique.has(id)) return;
+    const name = String(account?.name || account?.account_name || 'Account').trim();
+    const institution = String(account?.institution_name || '').trim();
+    const mask = String(account?.mask || '').trim();
+    const label = institution
+      ? name + ' - ' + institution + (mask ? ' (' + mask + ')' : '')
+      : name + (mask ? ' (' + mask + ')' : '');
+    unique.set(id, { id, label });
+  });
+  return Array.from(unique.values());
+}
+
+function renderRuleEditorModal(accounts = []) {
+  if (!ruleEditorState || !ruleEditorState.draft) return '';
+
+  const draft = ruleEditorState.draft;
+  const accountOptions = getRuleEditorAccountOptions(accounts);
+  const categoryOptions = getCategoryOptionsForType(draft.set_type);
+  const displayCategoryOptions = draft.set_category && !categoryOptions.includes(draft.set_category)
+    ? [draft.set_category, ...categoryOptions]
+    : categoryOptions;
+  const title = draft.mode === 'edit' ? 'Edit Rule' : 'Create Rule';
+  const description = draft.sourceTransactionLabel
+    ? 'Create a reusable rule from this transaction pattern.'
+    : 'Manage how future transactions should be classified.';
+
+  return (
+    '<div class="modal-backdrop" data-action="close-rule-editor"></div>' +
+    '<section class="review-modal" role="dialog" aria-modal="true" aria-label="' + title + '">' +
+    '<div class="card-header">' +
+    '<h3 class="card-title">' + title + '</h3>' +
+    '<p class="card-description">' + escapeHtml(description) + '</p>' +
+    '</div>' +
+    (draft.sourceTransactionLabel
+      ? '<div class="card" style="margin-bottom: 16px;"><p class="card-description">Source transaction</p><p style="margin: 6px 0 0;">' + escapeHtml(draft.sourceTransactionLabel) + '</p></div>'
+      : '') +
+    '<div class="form-grid">' +
+    '<label class="form-field"><span>Rule Name</span><input type="text" id="rule-name" value="' + escapeHtml(draft.name) + '" placeholder="Amazon purchases"></label>' +
+    '<label class="form-field"><span>Match Type</span><select id="rule-match-type">' +
+    ['contains', 'exact', 'starts_with', 'merchant_contains'].map((matchType) => '<option value="' + matchType + '" ' + (draft.match_type === matchType ? 'selected' : '') + '>' + matchType + '</option>').join('') +
+    '</select></label>' +
+    '<label class="form-field"><span>Match Value</span><input type="text" id="rule-match-value" value="' + escapeHtml(draft.match_value) + '" placeholder="merchant or description text"></label>' +
+    '<label class="form-field"><span>Account</span><select id="rule-account-id"><option value="">All accounts</option>' +
+    accountOptions.map((account) => '<option value="' + escapeHtml(account.id) + '" ' + (draft.account_id === account.id ? 'selected' : '') + '>' + escapeHtml(account.label) + '</option>').join('') +
+    '</select></label>' +
+    '<label class="form-field"><span>Amount Min</span><input type="number" step="0.01" id="rule-amount-min" value="' + escapeHtml(draft.amount_min) + '" placeholder="Optional"></label>' +
+    '<label class="form-field"><span>Amount Max</span><input type="number" step="0.01" id="rule-amount-max" value="' + escapeHtml(draft.amount_max) + '" placeholder="Optional"></label>' +
+    '<label class="form-field"><span>Set Type</span><select id="rule-set-type" ' + (draft.set_ignored ? 'disabled' : '') + '>' +
+    TRANSACTION_TYPES.map((type) => '<option value="' + type + '" ' + (draft.set_type === type ? 'selected' : '') + '>' + type + '</option>').join('') +
+    '</select></label>' +
+    '<label class="form-field"><span>Set Category</span><select id="rule-set-category" ' + (draft.set_ignored ? 'disabled' : '') + '>' +
+    displayCategoryOptions.map((category) => '<option value="' + escapeHtml(category) + '" ' + (draft.set_category === category ? 'selected' : '') + '>' + escapeHtml(category) + '</option>').join('') +
+    '</select></label>' +
+    '<label class="form-field field-checkbox"><input type="checkbox" id="rule-enabled" ' + (draft.enabled ? 'checked' : '') + '> <span>Enabled</span></label>' +
+    '<label class="form-field field-checkbox"><input type="checkbox" id="rule-unreviewed-only" ' + (draft.apply_to_unreviewed_only ? 'checked' : '') + '> <span>Only apply to unreviewed transactions</span></label>' +
+    '<label class="form-field field-checkbox"><input type="checkbox" id="rule-set-ignored" ' + (draft.set_ignored ? 'checked' : '') + '> <span>Mark matching transactions as ignored</span></label>' +
+    '</div>' +
+    '<div id="rule-editor-error" class="settings-message error">' + escapeHtml(ruleEditorState.error || '') + '</div>' +
+    '<div class="filter-actions">' +
+    '<button class="button button-secondary" data-action="close-rule-editor">Close</button>' +
+    '<button class="button button-primary" data-action="save-rule-editor">' + (draft.mode === 'edit' ? 'Save Rule' : 'Create Rule') + '</button>' +
+    '</div>' +
+    '</section>'
+  );
+}
+
+function getTransactionById(id) {
+  return transactionsCache.find((row) => row.id === id) || null;
+}
+
+function renderPageFrame(container, tabId, rightStatusHtml) {
+  const meta = pageMeta[tabId] || pageMeta.dashboard;
+  container.innerHTML =
+    '<header class="page-header">' +
+    '<div class="page-header-main">' +
+    '<h2 class="page-title">' + meta.title + '</h2>' +
+    '<p class="page-description">' + meta.description + '</p>' +
+    '</div>' +
+    '<div class="page-header-right">' + (rightStatusHtml || '') + '</div>' +
+    '</header>' +
+    '<div id="page-body" class="page-body"></div>';
+  return document.getElementById('page-body');
+}
+
+function getPeriodLabel(period) {
+  if (!period) return 'Unavailable';
+  return period.label;
+}
+
+function renderRenderError(container) {
+  container.innerHTML =
+    '<div class="card">' +
+    '<div class="error-card">Page failed to render. Check console for details.</div>' +
+    '</div>';
+}
+
+function renderPlaceholderPage(container, tabId) {
+  const body = renderPageFrame(container, tabId, '<span class="status-badge">Coming Soon</span>');
+  if (!body) return;
+  const meta = pageMeta[tabId] || pageMeta.dashboard;
+  const period = getActiveBudgetPeriod();
+  const showPeriod = PERIOD_AWARE_TABS.has(tabId) && tabId !== 'transactions' && tabId !== 'dashboard';
+  body.innerHTML =
+    '<section class="card empty-state-card">' +
+    (showPeriod ? '<p class="period-chip">Budget period: ' + getPeriodLabel(period) + '</p>' : '') +
+    '<p class="empty-state">' + meta.description + '</p>' +
+    '</section>';
+}
+
+// ---------------------------------------------------------------------------
+// Settings page
+// ---------------------------------------------------------------------------
+
+async function fetchSettingValue(key) {
+  const res = await fetch(BACKEND + '/api/settings/' + encodeURIComponent(key));
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const data = await res.json();
+  return data.value && typeof data.value === 'object' ? data.value : {};
+}
+
+async function saveSettingValue(key, value) {
+  const res = await fetch(BACKEND + '/api/settings/' + encodeURIComponent(key), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value }),
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+}
+
+async function renderSettings(container) {
+  const body = renderPageFrame(container, 'settings', '<span class="status-badge">Local</span>');
+  if (!body) return;
+  body.innerHTML = '<section class="card"><p class="empty-state">Loading connection status...</p></section>';
+  let status;
+  let activeAccounts = [];
+  let rules = [];
+  let safeMoneySettings = {};
+  try {
+    const [statusRes, accountsRes, rulesRes] = await Promise.all([
+      fetch(BACKEND + '/api/plaid/status'),
+      fetch(BACKEND + '/api/accounts').catch(() => null),
+      fetchRules().catch(() => []),
+    ]);
+    if (!statusRes.ok) throw new Error('HTTP ' + statusRes.status);
+    status = await statusRes.json();
+    if (accountsRes && accountsRes.ok) {
+      activeAccounts = await accountsRes.json();
+    } else {
+      activeAccounts = Array.isArray(status?.accounts) ? status.accounts : [];
+    }
+    rules = Array.isArray(rulesRes) ? rulesRes : [];
+    safeMoneySettings = await fetchSettingValue('safe_money_settings').catch(() => ({}));
+  } catch (err) {
+    body.innerHTML =
+      '<section class="card">' +
+      '<div class="error-card">Backend not running on ' + BACKEND + '.' +
+      '<br><small>' + err.message + '</small></div>' +
+      '</section>';
+    return;
+  }
+
+  const connected = !!status?.connected;
+  const items = Array.isArray(status?.items) ? status.items : [];
+  const removedItemsCount = Number(status?.removedItemsCount || 0);
+  const staleAccountsCount = Number(status?.staleAccountsCount || 0);
+  const itemsHtml = connected && items.length
+    ? items.map(function (item) {
+        return (
+          '<div class="institution-row" data-item-id="' + item.itemId + '">' +
+          '<strong>' + (item.institutionName || 'Unknown Bank') + '</strong>' +
+          '<span class="status-badge">' + (item.status || 'active') + '</span>' +
+          (item.lastSyncedAt
+            ? '<small>Last synced: ' + new Date(item.lastSyncedAt).toLocaleString() + '</small>'
+            : '<small>Not yet synced</small>') +
+          '<button class="button button-danger button-sm" data-action="remove-plaid-item" data-item-id="' +
+          item.itemId + '">Remove</button>' +
+          '</div>'
+        );
+      }).join('')
+    : '';
+
+  const accountCount = (activeAccounts && activeAccounts.length) || 0;
+  const ruleEditorHtml = renderRuleEditorModal(activeAccounts || []);
+  const safeMoneyBuffer = Number(safeMoneySettings.safetyBuffer ?? safeMoneySettings.safety_buffer ?? 0) || 0;
+  const safeMoneyIncludeRollover = safeMoneySettings.includeBoaRolloverInSafeToSpend !== false;
+  const safeMoneyIncludePending = safeMoneySettings.includePendingTransactions === true || safeMoneySettings.include_pending_transactions === true;
+  const rulesRows = rules.length
+    ? rules.map((rule) => (
+        '<tr>' +
+        '<td>' + (rule.enabled ? '<span class="status-reviewed">Enabled</span>' : '<span class="status-needs-review">Disabled</span>') + '</td>' +
+        '<td>' + escapeHtml(rule.name || '-') + '</td>' +
+        '<td>' + escapeHtml(rule.match_type || 'contains') + '</td>' +
+        '<td>' + escapeHtml(rule.match_value || '') + '</td>' +
+        '<td>' + escapeHtml(rule.set_type || '-') + '</td>' +
+        '<td>' + escapeHtml(rule.set_category || '-') + '</td>' +
+        '<td class="inline-actions">' +
+        '<button class="button button-secondary button-sm" data-action="rules-edit" data-id="' + rule.id + '">Edit</button>' +
+        '<button class="button button-secondary button-sm" data-action="rules-toggle-enabled" data-id="' + rule.id + '" data-enabled="' + (rule.enabled ? '1' : '0') + '">' + (rule.enabled ? 'Disable' : 'Enable') + '</button>' +
+        '</td>' +
+        '</tr>'
+      )).join('')
+    : '<tr><td colspan="7">No rules yet.</td></tr>';
+
+  body.innerHTML =
+    '<section class="card settings-section">' +
+    '<div class="card-header">' +
+    '<h3 class="card-title">Plaid Connection</h3>' +
+    '<p class="card-description">Connect your bank and sync transactions.</p>' +
+    '</div>' +
+    '<div class="connection-status ' + (connected ? 'connected' : 'not-connected') + '">' +
+    (connected ? 'Connected' : 'Not connected') +
+    (accountCount > 0
+      ? ' <span class="account-count">' + accountCount + ' account' + (accountCount !== 1 ? 's' : '') + '</span>'
+      : '') +
+    '</div>' +
+    '<p class="card-description">Removed items: ' + removedItemsCount + ' | Stale accounts: ' + staleAccountsCount + '</p>' +
+    (itemsHtml ? '<div class="institutions-list">' + itemsHtml + '</div>' : '<p class="empty-state">No connected institutions yet.</p>') +
+    '<div class="settings-actions">' +
+    '<button class="button button-primary" data-action="connect-plaid">Connect Bank</button>' +
+    (connected ? '<button class="button button-secondary" data-action="sync-transactions">Sync Transactions</button>' : '') +
+    '<button class="button button-secondary" data-action="cleanup-removed-plaid">Clean removed bank data</button>' +
+    '</div>' +
+    '<div id="settings-message" class="settings-message" aria-live="polite"></div>' +
+    '</section>' +
+    '<section class="card settings-section">' +
+    '<div class="card-header">' +
+    '<h3 class="card-title">Rules Manager</h3>' +
+    '<p class="card-description">Manage saved transaction classification rules.</p>' +
+    '</div>' +
+    (rulesManagerMessage ? '<p class="settings-message ' + (rulesManagerMessageType === 'error' ? 'error' : 'success') + '">' + escapeHtml(rulesManagerMessage) + '</p>' : '') +
+    '<div class="settings-actions">' +
+    '<button class="button button-secondary" data-action="rules-add">Add Rule</button>' +
+    '</div>' +
+    '<div class="table-wrap"><table class="table">' +
+    '<thead><tr><th>Status</th><th>Name</th><th>Match Type</th><th>Match Value</th><th>Type</th><th>Category</th><th>Actions</th></tr></thead>' +
+    '<tbody>' + rulesRows + '</tbody>' +
+    '</table></div>' +
+    '</section>' +
+    '<section class="card settings-section">' +
+    '<div class="card-header">' +
+    '<h3 class="card-title">Data Tools</h3>' +
+    '<p class="card-description">Quick actions for data checks and safety backups.</p>' +
+    '</div>' +
+    '<div class="settings-actions">' +
+    '<button class="button button-secondary" data-action="data-tools-run-health">Run Data Health Check</button>' +
+    '<button class="button button-secondary" data-action="data-tools-cleanup-removed-plaid">Clean removed bank data</button>' +
+    '<button class="button button-secondary" data-action="data-tools-export-backup">Export Backup</button>' +
+    '</div>' +
+    '</section>' +
+    '<section class="card settings-section">' +
+    '<div class="card-header">' +
+    '<h3 class="card-title">Safe Money</h3>' +
+    '<p class="card-description">Configure the shared safe-to-spend and safe-to-transfer rules.</p>' +
+    '</div>' +
+    '<div class="form-grid safe-money-settings-grid">' +
+    '<label class="form-field"><span>Safety buffer</span><input id="safe-money-buffer" type="number" step="0.01" value="' + escapeHtml(String(safeMoneyBuffer)) + '"></label>' +
+    '<label class="form-field checkbox-field"><span><input id="safe-money-rollover" type="checkbox" ' + (safeMoneyIncludeRollover ? 'checked' : '') + '> Include BOA rollover in Safe to Spend</span></label>' +
+    '<label class="form-field checkbox-field"><span><input id="safe-money-pending" type="checkbox" ' + (safeMoneyIncludePending ? 'checked' : '') + '> Include pending transactions in Safe Money</span></label>' +
+    '</div>' +
+    '<div class="settings-actions">' +
+    '<button class="button button-primary" data-action="safe-money-save">Save Safe Money Settings</button>' +
+    '</div>' +
+    '<div id="safe-money-message" class="settings-message" aria-live="polite"></div>' +
+    '</section>' +
+    ruleEditorHtml;
+
+  body.querySelector('[data-action="safe-money-save"]')?.addEventListener('click', async () => {
+    const messageEl = document.getElementById('safe-money-message');
+    try {
+      const value = {
+        safetyBuffer: Number(document.getElementById('safe-money-buffer')?.value || 0),
+        includeBoaRolloverInSafeToSpend: !!document.getElementById('safe-money-rollover')?.checked,
+        includePendingTransactions: !!document.getElementById('safe-money-pending')?.checked,
+      };
+      await saveSettingValue('safe_money_settings', value);
+      if (messageEl) {
+        messageEl.className = 'settings-message success';
+        messageEl.textContent = 'Safe Money settings saved.';
+      }
+    } catch (err) {
+      if (messageEl) {
+        messageEl.className = 'settings-message error';
+        messageEl.textContent = err.message.includes('Failed to fetch') ? 'Backend not running on http://localhost:8787.' : err.message;
+      }
+    }
+  });
+
+  // Backup & Restore section
+  renderBackupSection(body);
+}
+
+function showSettingsMessage(text, isError) {
+  const el = document.getElementById('settings-message');
+  if (el) {
+    el.textContent = text;
+    el.className = 'settings-message ' + (isError ? 'error' : 'success');
+  }
+}
+
+function loadPlaidScript() {
+  return new Promise(function (resolve, reject) {
+    if (window.Plaid) return resolve();
+    const script = document.createElement('script');
+    script.src = 'https://cdn.plaid.com/link/v2/stable/link-initialize.js';
+    script.onload = resolve;
+    script.onerror = function () { reject(new Error('Failed to load Plaid Link script.')); };
+    document.head.appendChild(script);
+  });
+}
+
+async function handleConnectPlaid(btn) {
+  btn.disabled = true;
+  btn.dataset.loading = 'true';
+  showSettingsMessage('Requesting link token...');
+  try {
+    const tokenRes = await fetch(BACKEND + '/api/plaid/create-link-token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const tokenData = await tokenRes.json();
+    if (!tokenRes.ok || !tokenData.link_token) {
+      throw new Error(tokenData.error || 'Failed to get link token.');
+    }
+    await loadPlaidScript();
+    const handler = window.Plaid.create({
+      token: tokenData.link_token,
+      onSuccess: async function (publicToken, metadata) {
+        showSettingsMessage('Exchanging token...');
+        try {
+          const exchRes = await fetch(BACKEND + '/api/plaid/exchange-public-token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ public_token: publicToken }),
+          });
+          const exchData = await exchRes.json();
+          if (!exchRes.ok) throw new Error(exchData.error || 'Exchange failed.');
+          const contentEl = document.getElementById('page-content');
+          if (contentEl) await renderSettings(contentEl);
+          showSettingsMessage('Bank connected. Click Sync Transactions.');
+        } catch (exchErr) {
+          showSettingsMessage('Error: ' + exchErr.message, true);
+        } finally {
+          btn.disabled = false;
+          btn.dataset.loading = '';
+        }
+      },
+      onExit: function (err) {
+        if (err) showSettingsMessage('Plaid Link closed: ' + (err.display_message || err.error_message || ''), true);
+        else showSettingsMessage('');
+        btn.disabled = false;
+        btn.dataset.loading = '';
+      },
+    });
+    handler.open();
+  } catch (err) {
+    showSettingsMessage('Error: ' + err.message, true);
+    btn.disabled = false;
+    btn.dataset.loading = '';
+  }
+}
+
+async function handleSyncTransactions(btn) {
+  btn.disabled = true;
+  btn.dataset.loading = 'true';
+  showSettingsMessage('Syncing transactions...');
+  try {
+    const data = await syncTransactionsNow();
+    showSettingsMessage(
+      'Sync complete: ' + (data.addedNew ?? 0) + ' new, ' + (data.updatedExisting ?? 0) + ' updated, ' +
+      (data.modified ?? 0) + ' modified, ' + (data.removed ?? 0) + ' removed. Accounts: ' +
+      (data.accountsInserted ?? 0) + ' inserted, ' + (data.accountsUpdated ?? 0) + ' updated. Total: ' + data.totalTransactions + '.'
+    );
+  } catch (err) {
+    showSettingsMessage('Error: ' + err.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.dataset.loading = '';
+  }
+}
+
+async function syncTransactionsNow() {
+  const res = await fetch(BACKEND + '/api/plaid/sync-transactions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Sync failed.');
+  window.dispatchEvent(new CustomEvent('budget:transactions-updated'));
+  return data;
+}
+
+async function runRecurringBillsAutoDetectNow(period) {
+  const response = await fetch(BACKEND + '/api/recurring-bills/auto-detect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      periodId: period.id,
+      startDate: period.startDate,
+      exclusiveEndDate: period.exclusiveEndDate,
+    }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error || 'Auto-detect failed.');
+  }
+  window.dispatchEvent(new CustomEvent('budget:recurring-bills-updated'));
+  return data;
+}
+
+async function handleRemovePlaidItem(btn) {
+  const itemId = btn.dataset.itemId;
+  if (!itemId) return;
+  if (!confirm('Remove this bank connection? This cannot be undone.')) return;
+  btn.disabled = true;
+  btn.dataset.loading = 'true';
+  showSettingsMessage('Removing bank...');
+  try {
+    const res = await fetch(BACKEND + '/api/plaid/items/' + encodeURIComponent(itemId), {
+      method: 'DELETE',
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Remove failed.');
+    await fetch(BACKEND + '/api/plaid/cleanup-removed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    }).catch(() => null);
+    const contentEl = document.getElementById('page-content');
+    if (contentEl) await renderSettings(contentEl);
+    window.dispatchEvent(new CustomEvent('budget:transactions-updated'));
+    showSettingsMessage('Bank removed.');
+  } catch (err) {
+    showSettingsMessage('Error: ' + err.message, true);
+    btn.disabled = false;
+    btn.dataset.loading = '';
+    return;
+  }
+  btn.dataset.loading = '';
+}
+
+async function handleCleanupRemovedPlaidData(btn) {
+  btn.disabled = true;
+  btn.dataset.loading = 'true';
+  showSettingsMessage('Cleaning removed bank data...');
+  try {
+    const res = await fetch(BACKEND + '/api/plaid/cleanup-removed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Cleanup failed.');
+    const contentEl = document.getElementById('page-content');
+    if (contentEl) await renderSettings(contentEl);
+    const staleAccountsDeleted = Number(data.staleAccountsDeleted ?? data.deletedAccounts ?? 0);
+    const removedItemsDeleted = Number(data.removedItemsDeleted ?? data.deletedRemovedItems ?? 0);
+    showSettingsMessage('Cleanup complete: ' + staleAccountsDeleted + ' stale account(s) and ' + removedItemsDeleted + ' removed item(s) deleted.');
+  } catch (err) {
+    showSettingsMessage('Error: ' + err.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.dataset.loading = '';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Transactions page
+// ---------------------------------------------------------------------------
+
+async function renderTransactions(container) {
+  await fetchMasterLists(false);
+  const period = getActiveBudgetPeriod();
+  let closeoutRecord = null;
+  try {
+    closeoutRecord = await fetchCloseoutRecord(period.id);
+  } catch (_err) {
+    closeoutRecord = null;
+  }
+  const body = renderPageFrame(container, 'transactions', '<span class="status-badge">' + getPeriodLabel(period) + '</span>');
+  if (!body) return;
+  body.innerHTML = '<section class="card"><p class="empty-state">Loading transactions...</p></section>';
+  let rows;
+  try {
+    rows = await fetchTransactions();
+  } catch (err) {
+    body.innerHTML =
+      '<section class="card">' +
+      '<div class="error-card">Backend not running on http://localhost:8787.' +
+      '<br><small>' + err.message + '</small></div>' +
+      '</section>';
+    return;
+  }
+  if (!rows.length) {
+    body.innerHTML =
+      '<section class="card empty-state-card">' +
+      '<p class="empty-state">No transactions synced yet. Go to Settings, connect a bank, then sync transactions.</p>' +
+      '</section>';
+    return;
+  }
+
+  let visibleRows = rows;
+  let modeLabel = 'Showing all synced transactions.';
+  if (transactionsViewMode === 'period') {
+    let parseFailure = null;
+    visibleRows = rows.filter((row) => {
+      try {
+        return isDateInBudgetPeriod(row.date, period);
+      } catch (err) {
+        console.error('Transaction date parse failed:', err, row.date);
+        parseFailure = err;
+        return false;
+      }
+    });
+    if (parseFailure) {
+      body.innerHTML =
+        '<section class="card">' +
+        '<div class="error-card">Page failed to render. Check console for details.</div>' +
+        '</section>';
+      return;
+    }
+    modeLabel = 'Showing transactions for: ' + getPeriodLabel(period);
+  }
+
+  if (!transactionsFilters.showIgnored) {
+    visibleRows = visibleRows.filter((row) => !row.ignored);
+  }
+
+  const searchNeedle = transactionsFilters.search.trim().toLowerCase();
+  if (searchNeedle) {
+    visibleRows = visibleRows.filter((row) => {
+      const haystack = ((row.name || '') + ' ' + (row.merchant_name || '')).toLowerCase();
+      return haystack.includes(searchNeedle);
+    });
+  }
+
+  if (transactionsFilters.type !== 'All') {
+    visibleRows = visibleRows.filter((row) => (row.type || '') === transactionsFilters.type);
+  }
+
+  if (transactionsFilters.category !== 'All') {
+    visibleRows = visibleRows.filter((row) => (row.category || '') === transactionsFilters.category);
+  }
+
+  if (transactionsFilters.reviewed === 'Reviewed') {
+    visibleRows = visibleRows.filter((row) => !!row.reviewed);
+  } else if (transactionsFilters.reviewed === 'Needs Review') {
+    visibleRows = visibleRows.filter((row) => !row.reviewed);
+  }
+
+  if (pendingReviewTransactionId) {
+    const pendingTransaction = rows.find((row) => row.id === pendingReviewTransactionId);
+    if (pendingTransaction) {
+      reviewModalTransactionId = pendingReviewTransactionId;
+      reviewDraft = normalizeReviewDraft(pendingTransaction, {
+        type: pendingTransaction.type || 'Expense',
+        category: pendingTransaction.category || '',
+        notes: pendingTransaction.notes || '',
+        reviewed: !!pendingTransaction.reviewed,
+        ignored: !!pendingTransaction.ignored,
+      });
+    }
+    pendingReviewTransactionId = null;
+  }
+
+  const shownCount = visibleRows.length;
+  const reviewedCount = visibleRows.filter((row) => !!row.reviewed).length;
+  const needsReviewCount = visibleRows.filter((row) => !row.reviewed).length;
+  const ignoredCount = visibleRows.filter((row) => !!row.ignored).length;
+
+  const availableCategories = Array.from(
+    new Set(
+      visibleRows
+        .map((row) => row.category)
+        .filter(Boolean)
+    )
+  ).sort();
+
+  function renderTypeBadge(type) {
+    if (!type) return '<span class="muted-note">-</span>';
+    return '<span class="type-badge">' + escapeHtml(type) + '</span>';
+  }
+
+  function renderCategoryBadge(category) {
+    if (!category) return '<span class="muted-note">-</span>';
+    return '<span class="category-badge">' + escapeHtml(category) + '</span>';
+  }
+
+  function renderReviewedBadge(value) {
+    if (value) return '<span class="status-reviewed">Reviewed</span>';
+    return '<span class="status-needs-review">Needs Review</span>';
+  }
+
+  if (!visibleRows.length) {
+    body.innerHTML =
+      '<section class="card">' +
+        (transactionsMessage ? '<p class="settings-message ' + (transactionsMessageType === 'error' ? 'error' : 'success') + '">' + escapeHtml(transactionsMessage) + '</p>' : '') +
+      '<div class="card-header">' +
+      '<h3 class="card-title">Synced Transactions</h3>' +
+      '</div>' +
+      '<div class="form-grid">' +
+      '<label class="form-field"><span>Search</span><input type="text" id="tx-search" value="' + escapeHtml(transactionsFilters.search) + '" placeholder="Description or merchant"></label>' +
+      '<label class="form-field"><span>Type</span><select id="tx-type-filter"><option>All</option>' + TRANSACTION_TYPES.map((type) => '<option ' + (transactionsFilters.type === type ? 'selected' : '') + '>' + type + '</option>').join('') + '</select></label>' +
+      '<label class="form-field"><span>Category</span><select id="tx-category-filter"><option>All</option>' + availableCategories.map((category) => '<option ' + (transactionsFilters.category === category ? 'selected' : '') + '>' + escapeHtml(category) + '</option>').join('') + '</select></label>' +
+      '<label class="form-field"><span>Reviewed</span><select id="tx-reviewed-filter"><option ' + (transactionsFilters.reviewed === 'All' ? 'selected' : '') + '>All</option><option ' + (transactionsFilters.reviewed === 'Reviewed' ? 'selected' : '') + '>Reviewed</option><option ' + (transactionsFilters.reviewed === 'Needs Review' ? 'selected' : '') + '>Needs Review</option></select></label>' +
+      '<label class="form-field field-checkbox"><input type="checkbox" id="tx-show-ignored" ' + (transactionsFilters.showIgnored ? 'checked' : '') + '> <span>Show ignored</span></label>' +
+      '</div>' +
+      '<div class="filter-actions">' +
+      '<span class="muted-note">' + modeLabel + '</span>' +
+      '<button class="button button-secondary" data-action="preview-rules">Preview Rules</button>' +
+      '<button class="button button-secondary" data-action="apply-rules">Apply Rules</button>' +
+      '<button class="button button-secondary" data-action="show-all-synced">Show all synced</button>' +
+      '<button class="button button-secondary" data-action="use-budget-period">Use budget period</button>' +
+      '</div>' +
+      '<p class="empty-state">No transactions found for this view.</p>' +
+      '</section>';
+    return;
+  }
+
+  function fmt(amount) {
+    const abs = Math.abs(amount).toFixed(2);
+    return amount < 0 ? '-$' + abs : '+$' + abs;
+  }
+
+  const rowsHtml = visibleRows.map(function (t) {
+    return (
+      '<tr>' +
+      '<td>' + (t.date || '') + '</td>' +
+      '<td>' + (t.account_name || '') + (t.mask ? ' (\u2022' + t.mask + ')' : '') +
+        '<br><small>' + (t.institution_name || '') + '</small></td>' +
+      '<td>' + (t.name || '') + '</td>' +
+      '<td>' + (t.merchant_name || '') + '</td>' +
+      '<td class="' + (t.amount < 0 ? 'amount-negative' : 'amount-positive') + '">' + fmt(t.amount) + '</td>' +
+      '<td>' + (t.pending ? 'Pending' : '') + '</td>' +
+      '<td>' + renderTypeBadge(t.type) + '</td>' +
+      '<td>' + renderCategoryBadge(t.category) + '</td>' +
+      '<td>' + renderReviewedBadge(!!t.reviewed) + '</td>' +
+      '<td class="transaction-actions">' +
+      '<button class="button button-secondary button-sm" data-action="review-transaction" data-id="' + t.id + '">Review</button>' +
+      '<button class="button button-secondary button-sm" data-action="toggle-ignore-transaction" data-id="' + t.id + '">' + (t.ignored ? 'Restore' : 'Ignore') + '</button>' +
+      '</td>' +
+      '</tr>'
+    );
+  }).join('');
+
+  const modalTransaction = reviewModalTransactionId ? getTransactionById(reviewModalTransactionId) : null;
+  const draft = modalTransaction ? normalizeReviewDraft(modalTransaction, reviewDraft || {}) : null;
+  const draftCategories = draft ? getCategoryOptionsForType(draft.type) : [];
+  const draftCategoryOptions = draft
+    ? (!draftCategories.includes(draft.category) && draft.category
+      ? [draft.category, ...draftCategories]
+      : draftCategories)
+    : [];
+  const ruleEditorHtml = renderRuleEditorModal(transactionsCache);
+
+  let modalHtml = '';
+  if (modalTransaction && draft) {
+    modalHtml =
+      '<div class="modal-backdrop" data-action="close-review-modal"></div>' +
+      '<section class="review-modal" role="dialog" aria-modal="true" aria-label="Review transaction">' +
+      '<div class="card-header">' +
+      '<h3 class="card-title">Review Transaction</h3>' +
+      '<p class="card-description">Edit type and category, then save review.</p>' +
+      '</div>' +
+      '<div class="form-grid review-details">' +
+      '<p><strong>Date:</strong> ' + escapeHtml(modalTransaction.date || '-') + '</p>' +
+      '<p><strong>Account:</strong> ' + escapeHtml((modalTransaction.account_name || '') + (modalTransaction.mask ? ' (' + modalTransaction.mask + ')' : '')) + '</p>' +
+      '<p><strong>Description:</strong> ' + escapeHtml(modalTransaction.name || '-') + '</p>' +
+      '<p><strong>Merchant:</strong> ' + escapeHtml(modalTransaction.merchant_name || '-') + '</p>' +
+      '<p><strong>Amount:</strong> ' + escapeHtml(fmt(Number(modalTransaction.amount || 0))) + '</p>' +
+      '<p><strong>Pending:</strong> ' + (modalTransaction.pending ? 'Yes' : 'No') + '</p>' +
+      '</div>' +
+      '<div class="form-grid">' +
+      '<label class="form-field"><span>Type</span><select id="review-type">' + TRANSACTION_TYPES.map((type) => '<option value="' + type + '" ' + (draft.type === type ? 'selected' : '') + '>' + type + '</option>').join('') + '</select></label>' +
+      '<label class="form-field"><span>Category</span><select id="review-category">' + draftCategoryOptions.map((category) => '<option value="' + category + '" ' + (draft.category === category ? 'selected' : '') + '>' + category + '</option>').join('') + '</select></label>' +
+      '<label class="form-field"><span>Notes</span><textarea id="review-notes" rows="3" placeholder="Optional notes">' + escapeHtml(draft.notes || '') + '</textarea></label>' +
+      '<label class="form-field field-checkbox"><input type="checkbox" id="review-reviewed" ' + (draft.reviewed ? 'checked' : '') + '> <span>Reviewed</span></label>' +
+      '</div>' +
+      '<div id="review-error" class="settings-message error"></div>' +
+      '<div class="filter-actions">' +
+      '<button class="button button-secondary" data-action="close-review-modal">Close</button>' +
+      '<button class="button button-secondary" data-action="create-rule-from-transaction" data-id="' + modalTransaction.id + '">Create rule from this transaction</button>' +
+      '<button class="button button-primary" data-action="save-transaction-review" data-id="' + modalTransaction.id + '">Save Review</button>' +
+      '</div>' +
+      '</section>';
+  }
+
+  body.innerHTML =
+    '<section class="card">' +
+    (transactionsMessage ? '<p class="settings-message ' + (transactionsMessageType === 'error' ? 'error' : 'success') + '">' + escapeHtml(transactionsMessage) + '</p>' : '') +
+    (closeoutRecord && closeoutRecord.status === 'closed' ? '<div class="closeout-warning">This period is closed. Reopen it before changing closeout-related data.</div>' : '') +
+    '<div class="card-header">' +
+    '<h3 class="card-title">Synced Transactions</h3>' +
+    '<p class="card-description transaction-count">' + shownCount + ' transaction' + (shownCount !== 1 ? 's' : '') + '</p>' +
+    '</div>' +
+    '<div class="dashboard-grid transaction-stats">' +
+    '<article class="card stat-card"><p class="card-description">Shown transactions</p><h3 class="card-title">' + shownCount + '</h3></article>' +
+    '<article class="card stat-card"><p class="card-description">Needs Review</p><h3 class="card-title">' + needsReviewCount + '</h3></article>' +
+    '<article class="card stat-card"><p class="card-description">Reviewed</p><h3 class="card-title">' + reviewedCount + '</h3></article>' +
+    '<article class="card stat-card"><p class="card-description">Ignored</p><h3 class="card-title">' + ignoredCount + '</h3></article>' +
+    '</div>' +
+    '<div class="form-grid">' +
+    '<label class="form-field"><span>Search</span><input type="text" id="tx-search" value="' + escapeHtml(transactionsFilters.search) + '" placeholder="Description or merchant"></label>' +
+    '<label class="form-field"><span>Type</span><select id="tx-type-filter"><option>All</option>' + TRANSACTION_TYPES.map((type) => '<option ' + (transactionsFilters.type === type ? 'selected' : '') + '>' + type + '</option>').join('') + '</select></label>' +
+    '<label class="form-field"><span>Category</span><select id="tx-category-filter"><option>All</option>' + availableCategories.map((category) => '<option ' + (transactionsFilters.category === category ? 'selected' : '') + '>' + escapeHtml(category) + '</option>').join('') + '</select></label>' +
+    '<label class="form-field"><span>Reviewed</span><select id="tx-reviewed-filter"><option ' + (transactionsFilters.reviewed === 'All' ? 'selected' : '') + '>All</option><option ' + (transactionsFilters.reviewed === 'Reviewed' ? 'selected' : '') + '>Reviewed</option><option ' + (transactionsFilters.reviewed === 'Needs Review' ? 'selected' : '') + '>Needs Review</option></select></label>' +
+    '<label class="form-field field-checkbox"><input type="checkbox" id="tx-show-ignored" ' + (transactionsFilters.showIgnored ? 'checked' : '') + '> <span>Show ignored</span></label>' +
+    '</div>' +
+    '<div class="filter-actions">' +
+    '<span class="muted-note">' + modeLabel + '</span>' +
+    '<button class="button button-secondary" data-action="preview-rules">Preview Rules</button>' +
+    '<button class="button button-secondary" data-action="apply-rules">Apply Rules</button>' +
+    '<button class="button button-secondary" data-action="show-all-synced">Show all synced</button>' +
+    '<button class="button button-secondary" data-action="use-budget-period">Use budget period</button>' +
+    '</div>' +
+    '<div class="table-wrap"><table class="table">' +
+    '<thead><tr>' +
+    '<th>Date</th><th>Account</th><th>Description</th><th>Merchant</th>' +
+    '<th>Amount</th><th>Pending</th><th>Type</th><th>Category</th><th>Reviewed</th><th>Actions</th>' +
+    '</tr></thead>' +
+    '<tbody>' + rowsHtml + '</tbody>' +
+    '</table></div>' +
+    '</section>' +
+    modalHtml +
+    ruleEditorHtml;
+}
+
+function applyBudgetPeriodToActivePage() {
+  const content = document.getElementById('page-content');
+  if (!content) return;
+  renderPage(activeTab);
+}
+
+async function patchTransactionReview(id, payload) {
+  const res = await fetch(BACKEND + '/api/transactions/' + encodeURIComponent(id), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  let data = {};
+  try {
+    data = await res.json();
+  } catch (_err) {
+    data = {};
+  }
+  if (!res.ok) {
+    if (res.status === 404) {
+      throw new Error('PATCH /api/transactions/:id not found or transaction missing.');
+    }
+    throw new Error(data.error || 'Failed to update transaction review.');
+  }
+  return data;
+}
+
+function openReviewModal(transactionId) {
+  const transaction = getTransactionById(transactionId);
+  if (!transaction) return;
+  reviewModalTransactionId = transactionId;
+  reviewDraft = normalizeReviewDraft(transaction, {
+    type: transaction.type || 'Expense',
+    category: transaction.category || '',
+    notes: transaction.notes || '',
+    reviewed: !!transaction.reviewed,
+    ignored: !!transaction.ignored,
+  });
+  applyBudgetPeriodToActivePage();
+}
+
+function closeReviewModal() {
+  reviewModalTransactionId = null;
+  reviewDraft = null;
+  applyBudgetPeriodToActivePage();
+}
+
+async function renderExpenses(container) {
+  const period = getActiveBudgetPeriod();
+  let closeoutRecord = null;
+  try {
+    closeoutRecord = await fetchCloseoutRecord(period.id);
+  } catch (_err) {
+    closeoutRecord = null;
+  }
+  const body = renderPageFrame(container, 'expenses', '<span class="status-badge">' + getPeriodLabel(period) + '</span>');
+  if (!body) return;
+  body.innerHTML = '<section class="card"><p class="empty-state">Loading expenses...</p></section>';
+
+  await fetchMasterLists(false);
+
+  let transactions;
+  try {
+    transactions = await fetchTransactions();
+  } catch (err) {
+    console.error('Failed to load transactions for expenses:', err);
+    const backendDown = String(err.message || '').includes('Failed to fetch') || (masterListsData.error || '').includes('Backend not running');
+    const message = backendDown ? 'Backend not running on http://localhost:8787.' : 'Transactions could not be loaded.';
+    body.innerHTML =
+      '<section class="card">' +
+      '<div class="error-card">' +
+      escapeHtml(message) +
+      '<br><small>' + escapeHtml(err.message) + '</small></div>' +
+      '</section>';
+    return;
+  }
+
+  if (!masterListsData.loaded) {
+    const message = masterListsData.error && masterListsData.error.includes('Backend not running')
+      ? 'Backend not running on http://localhost:8787.'
+      : 'Expense categories could not be loaded.';
+    body.innerHTML =
+      '<section class="card">' +
+      '<div class="error-card">' + escapeHtml(message) + '</div>' +
+      '</section>';
+    return;
+  }
+
+  const expenseCategories = getActiveExpenseCategories();
+  const categoryLookup = buildExpenseCategoryLookup(expenseCategories);
+  const expenseTransactions = transactions.filter((row) => isExpenseTransaction(row, period));
+
+  const categoryTotals = new Map();
+  for (const transaction of expenseTransactions) {
+    const categoryKey = normalizeExpenseCategoryKey(transaction.category);
+    if (!categoryLookup.has(categoryKey)) continue;
+    categoryTotals.set(categoryKey, (categoryTotals.get(categoryKey) || 0) + Math.abs(Number(transaction.amount || 0)));
+  }
+
+  const categoryRows = expenseCategories.map((category) => {
+    const actualSpent = categoryTotals.get(category.key) || 0;
+    const budgetAmount = Number(category.budgetAmount || 0);
+    const remaining = budgetAmount - actualSpent;
+    const progress = budgetAmount > 0 ? Math.min(actualSpent / budgetAmount, 1) : 0;
+    const status = budgetAmount <= 0
+      ? 'No budget'
+      : remaining < 0
+        ? 'Over by ' + formatCurrency(remaining)
+        : 'Left ' + formatCurrency(remaining);
+    return {
+      ...category,
+      budgetAmount,
+      actualSpent,
+      remaining,
+      progress,
+      status,
+    };
+  });
+
+  const totalExpenseBudget = expenseCategories.reduce((sum, category) => sum + Number(category.budgetAmount || 0), 0);
+  const actualSpent = expenseTransactions.reduce((sum, row) => sum + Math.abs(Number(row.amount || 0)), 0);
+  const remaining = totalExpenseBudget - actualSpent;
+  const categoriesOverBudget = categoryRows.filter((row) => row.budgetAmount > 0 && row.actualSpent > row.budgetAmount).length;
+
+  const uncategorizedTransactions = transactions
+    .filter((row) => isDateInBudgetPeriod(row.date, period) && !row.ignored)
+    .filter((row) => isTransactionNeedsReview(row) || isTransactionUncategorizedExpense(row, categoryLookup))
+    .sort(sortByDateDesc);
+
+  const uniqueUncategorized = [];
+  const seenUncategorized = new Set();
+  for (const row of uncategorizedTransactions) {
+    if (seenUncategorized.has(row.id)) continue;
+    seenUncategorized.add(row.id);
+    uniqueUncategorized.push(row);
+  }
+
+  const expenseLogRows = expenseTransactions.slice().sort(sortByDateDesc);
+
+  const summaryHtml = [
+    { label: 'Total Expense Budget', value: formatCurrency(totalExpenseBudget) },
+    { label: 'Actual Spent', value: formatCurrency(actualSpent) },
+    { label: 'Remaining', value: formatSignedCurrency(remaining) },
+    { label: 'Categories Over Budget', value: String(categoriesOverBudget) },
+  ].map((item) =>
+    '<article class="card stat-card"><p class="card-description">' + escapeHtml(item.label) + '</p><h3 class="card-title">' + escapeHtml(item.value) + '</h3></article>'
+  ).join('');
+
+  const categoryRowsHtml = categoryRows.length
+    ? categoryRows.map((category) =>
+        '<div class="expense-category-row">' +
+        '<div class="expense-category-main">' +
+        '<div class="expense-category-head">' +
+        '<strong>' + escapeHtml(category.name) + '</strong>' +
+        '<span>' + escapeHtml(formatCurrency(category.budgetAmount)) + ' budget</span>' +
+        '</div>' +
+        '<div class="expense-progress-bar"><span class="expense-progress-fill" style="width:' + (category.budgetAmount > 0 ? Math.min(category.progress * 100, 100) : 0) + '%"></span></div>' +
+        '<div class="expense-category-meta">' +
+        '<span>Actual ' + escapeHtml(formatCurrency(category.actualSpent)) + '</span>' +
+        '<span>Remaining ' + escapeHtml(formatSignedCurrency(category.remaining)) + '</span>' +
+        '</div>' +
+        '</div>' +
+        '<div class="expense-category-status">' + escapeHtml(category.status) + '</div>' +
+        '</div>'
+      ).join('')
+    : '<p class="empty-state">No active expense categories have been created yet.</p>';
+
+  const reviewRowsHtml = uniqueUncategorized.length
+    ? uniqueUncategorized.map((row) =>
+        '<div class="expense-review-item">' +
+        '<div><strong>' + escapeHtml(row.date || '-') + '</strong><br><span>' + escapeHtml(row.name || '-') + '</span></div>' +
+        '<div class="expense-review-amount">' + escapeHtml(formatSignedCurrency(row.amount)) + '</div>' +
+        '<div class="inline-actions"><button class="button button-secondary button-sm" data-action="expense-review-transaction" data-id="' + row.id + '">Review</button></div>' +
+        '</div>'
+      ).join('')
+    : '<p class="empty-state">No uncategorized transactions in this period.</p>';
+
+  const expenseLogHtml = expenseLogRows.length
+    ? '<div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Description</th><th>Merchant</th><th>Category</th><th>Account</th><th>Amount</th><th>Pending</th><th>Reviewed</th></tr></thead><tbody>' +
+      expenseLogRows.map((row) =>
+        '<tr>' +
+        '<td>' + escapeHtml(row.date || '') + '</td>' +
+        '<td>' + escapeHtml(row.name || '') + '</td>' +
+        '<td>' + escapeHtml(row.merchant_name || '') + '</td>' +
+        '<td>' + escapeHtml(row.category || 'Uncategorized') + '</td>' +
+        '<td>' + escapeHtml(row.account_name || '') + '</td>' +
+        '<td class="amount-positive">' + escapeHtml(formatCurrency(row.amount)) + '</td>' +
+        '<td>' + (row.pending ? renderBadge('Pending', 'badge-pending') : '') + '</td>' +
+        '<td>' + (row.reviewed ? renderBadge('Reviewed', 'badge-reviewed') : renderBadge('Needs Review', 'badge-warning')) + '</td>' +
+        '</tr>'
+      ).join('') +
+      '</tbody></table></div>'
+    : '<p class="empty-state">No reviewed expenses for this budget period.</p>';
+
+  body.innerHTML =
+    (closeoutRecord && closeoutRecord.status === 'closed' ? '<div class="closeout-warning">This period is closed. Reopen it before changing closeout-related data.</div>' : '') +
+    '<div class="summary-grid">' + summaryHtml + '</div>' +
+    '<section class="expenses-grid">' +
+    '<article class="card expenses-category-card">' +
+    '<div class="card-header"><h3 class="card-title">Category Spending Tracker</h3><p class="card-description">Selected budget period: ' + escapeHtml(getPeriodLabel(period)) + '</p></div>' +
+    categoryRowsHtml +
+    '</article>' +
+    '<article class="card expenses-review-card">' +
+    '<div class="card-header"><h3 class="card-title">Uncategorized / Review Needed</h3><p class="card-description">' + uniqueUncategorized.length + ' transaction' + (uniqueUncategorized.length === 1 ? '' : 's') + '</p></div>' +
+    reviewRowsHtml +
+    '</article>' +
+    '<article class="card expenses-log-card">' +
+    '<div class="card-header"><h3 class="card-title">Expense Log for Selected Period</h3><p class="card-description">Type = Expense, ignored = false, within the selected budget period.</p></div>' +
+    expenseLogHtml +
+    '</article>' +
+    '</section>';
+}
+
+function getActiveMasterListRows() {
+  return masterListsUiState.activeTab === 'expense' ? masterListsData.expenseList : masterListsData.recurringBillsList;
+}
+
+function formatCurrencyValue(value) {
+  return '$' + Number(value || 0).toFixed(2);
+}
+
+function renderActiveBadge(active) {
+  return active ? '<span class="status-active">Active</span>' : '<span class="status-inactive">Inactive</span>';
+}
+
+function renderMasterListTabs() {
+  return MASTER_LIST_TABS
+    .map((tab) =>
+      '<button class="master-tab' + (masterListsUiState.activeTab === tab.id ? ' active' : '') + '" data-action="master-list-tab" data-list-type="' + tab.id + '">' +
+      tab.label +
+      '</button>'
+    )
+    .join('');
+}
+
+function renderExpenseAddForm() {
+  return (
+    '<div class="master-form">' +
+    '<div class="form-grid">' +
+    '<label class="form-field"><span>Name</span><input id="expense-add-name" placeholder="Item name"></label>' +
+    '<label class="form-field"><span>Budget Amount</span><input id="expense-add-budget-amount" type="number" step="0.01" value="0"></label>' +
+    '<label class="form-field field-checkbox"><input id="expense-add-active" type="checkbox" checked> <span>Active</span></label>' +
+    '<label class="form-field"><span>Notes</span><textarea id="expense-add-notes" rows="2" placeholder="Optional notes"></textarea></label>' +
+    '</div>' +
+    '<div class="inline-actions"><button class="button button-primary" data-action="master-expense-add">Add expense</button></div>' +
+    '</div>'
+  );
+}
+
+function renderRecurringBillAddForm() {
+  return (
+    '<div class="master-form">' +
+    '<div class="form-grid">' +
+    '<label class="form-field"><span>Name</span><input id="recurring-add-name" placeholder="Bill name"></label>' +
+    '<label class="form-field"><span>Category</span><select id="recurring-add-category"><option>Needs</option><option>Wants</option><option>Debts/Savings</option></select></label>' +
+    '<label class="form-field"><span>Due</span><input id="recurring-add-due-day" type="number" min="1" max="31" value="1"></label>' +
+    '<label class="form-field"><span>Amount</span><input id="recurring-add-amount" type="number" step="0.01" value="0"></label>' +
+    '<label class="form-field"><span>Paid From</span><input id="recurring-add-paid-from" type="text" placeholder="Optional"></label>' +
+    '<label class="form-field"><span>Match Words</span><input id="recurring-add-match-words" type="text" placeholder="Example: netflix, streaming, autopay"><small class="muted-note">Use words that appear in the bank transaction description. Separate multiple words with commas.</small></label>' +
+    '<label class="form-field"><span>Autopay</span><select id="recurring-add-autopay"><option value="1">Yes</option><option value="0">No</option></select></label>' +
+    '<label class="form-field field-checkbox"><input id="recurring-add-active" type="checkbox" checked> <span>Active</span></label>' +
+    '<label class="form-field"><span>Notes</span><textarea id="recurring-add-notes" rows="2" placeholder="Optional notes"></textarea></label>' +
+    '</div>' +
+    '<div class="inline-actions"><button class="button button-primary" data-action="master-recurring-add">Add recurring bill</button></div>' +
+    '</div>'
+  );
+}
+
+function renderExpenseEditRow(row) {
+  return (
+    '<tr>' +
+    '<td colspan="5">' +
+    '<div class="master-form">' +
+    '<div class="form-grid">' +
+    '<label class="form-field"><span>Name</span><input id="expense-edit-name" value="' + escapeHtml(row.name) + '"></label>' +
+    '<label class="form-field"><span>Budget Amount</span><input id="expense-edit-budget-amount" type="number" step="0.01" value="' + escapeHtml(row.budgetAmount ?? 0) + '"></label>' +
+    '<label class="form-field field-checkbox"><input id="expense-edit-active" type="checkbox" ' + (row.active ? 'checked' : '') + '> <span>Active</span></label>' +
+    '<label class="form-field"><span>Notes</span><textarea id="expense-edit-notes" rows="2">' + escapeHtml(row.notes || '') + '</textarea></label>' +
+    '</div>' +
+    '<div class="inline-actions">' +
+    '<button class="button button-primary" data-action="master-expense-save" data-id="' + row.id + '">Save</button>' +
+    '<button class="button button-secondary" data-action="master-expense-cancel">Cancel</button>' +
+    '</div>' +
+    '</div>' +
+    '</td>' +
+    '</tr>'
+  );
+}
+
+function renderRecurringBillEditRow(row) {
+  return (
+    '<tr>' +
+    '<td colspan="10">' +
+    '<div class="master-form">' +
+    '<div class="form-grid">' +
+    '<label class="form-field"><span>Name</span><input id="recurring-edit-name" value="' + escapeHtml(row.name) + '"></label>' +
+    '<label class="form-field"><span>Category</span><select id="recurring-edit-category">' +
+      ['Needs', 'Wants', 'Debts/Savings'].map((option) => '<option ' + (row.category === option ? 'selected' : '') + '>' + option + '</option>').join('') +
+    '</select></label>' +
+    '<label class="form-field"><span>Due</span><input id="recurring-edit-due-day" type="number" min="1" max="31" value="' + escapeHtml(row.dueDay ?? 1) + '"></label>' +
+    '<label class="form-field"><span>Amount</span><input id="recurring-edit-amount" type="number" step="0.01" value="' + escapeHtml(row.amount ?? 0) + '"></label>' +
+    '<label class="form-field"><span>Paid From</span><input id="recurring-edit-paid-from" type="text" value="' + escapeHtml(row.paidFrom || '') + '"></label>' +
+    '<label class="form-field"><span>Match Words</span><input id="recurring-edit-match-words" type="text" value="' + escapeHtml((row.matchWords || []).join(', ')) + '" placeholder="Example: netflix, streaming, autopay"><small class="muted-note">Use words that appear in the bank transaction description. Separate multiple words with commas.</small></label>' +
+    '<label class="form-field"><span>Autopay</span><select id="recurring-edit-autopay"><option value="1" ' + (row.autopay ? 'selected' : '') + '>Yes</option><option value="0" ' + (!row.autopay ? 'selected' : '') + '>No</option></select></label>' +
+    '<label class="form-field field-checkbox"><input id="recurring-edit-active" type="checkbox" ' + (row.active ? 'checked' : '') + '> <span>Active</span></label>' +
+    '<label class="form-field"><span>Notes</span><textarea id="recurring-edit-notes" rows="2">' + escapeHtml(row.notes || '') + '</textarea></label>' +
+    '</div>' +
+    '<div class="inline-actions">' +
+    '<button class="button button-primary" data-action="master-recurring-save" data-id="' + row.id + '">Save</button>' +
+    '<button class="button button-secondary" data-action="master-recurring-cancel">Cancel</button>' +
+    '</div>' +
+    '</div>' +
+    '</td>' +
+    '</tr>'
+  );
+}
+
+async function renderMasterLists(container) {
+  const body = renderPageFrame(container, 'master-lists', '<span class="status-badge">Editable</span>');
+  if (!body) return;
+  body.innerHTML = '<section class="card"><p class="empty-state">Loading master lists...</p></section>';
+
+  await fetchMasterLists(false);
+
+  if (!masterListsData.loaded) {
+    body.innerHTML = '<section class="card"><div class="error-card">Backend not running on http://localhost:8787.</div></section>';
+    return;
+  }
+
+  const rows = getActiveMasterListRows();
+  const isExpenseTab = masterListsUiState.activeTab === 'expense';
+
+  const tableRows = rows.length
+    ? rows.map((row) => {
+        if (masterListsUiState.editingId === row.id && masterListsUiState.editingType === masterListsUiState.activeTab) {
+          return isExpenseTab ? renderExpenseEditRow(row) : renderRecurringBillEditRow(row);
+        }
+
+        if (isExpenseTab) {
+          return (
+            '<tr>' +
+            '<td>' + escapeHtml(row.name) + '</td>' +
+            '<td>' + escapeHtml(formatCurrencyValue(row.budgetAmount)) + '</td>' +
+            '<td>' + renderActiveBadge(row.active) + '</td>' +
+            '<td>' + escapeHtml(row.notes || '') + '</td>' +
+            '<td class="inline-actions">' +
+            '<button class="button button-secondary button-sm" data-action="master-expense-edit" data-id="' + row.id + '">Edit</button>' +
+            '<button class="button button-secondary button-sm" data-action="master-expense-toggle-active" data-id="' + row.id + '" data-active="' + (row.active ? '1' : '0') + '">' + (row.active ? 'Deactivate' : 'Reactivate') + '</button>' +
+            '</td>' +
+            '</tr>'
+          );
+        }
+
+        return (
+          '<tr>' +
+          '<td>' + escapeHtml(row.name) + '</td>' +
+          '<td>' + escapeHtml(row.category || '') + '</td>' +
+          '<td>' + escapeHtml(String(row.dueDay ?? '')) + '</td>' +
+          '<td>' + escapeHtml(formatCurrencyValue(row.amount)) + '</td>' +
+          '<td>' + escapeHtml(row.paidFrom || '') + '</td>' +
+          '<td>' + escapeHtml((row.matchWords || []).join(', ')) + '</td>' +
+          '<td>' + escapeHtml(row.autopay ? 'Yes' : 'No') + '</td>' +
+          '<td>' + renderActiveBadge(row.active) + '</td>' +
+          '<td>' + escapeHtml(row.notes || '') + '</td>' +
+          '<td class="inline-actions">' +
+          '<button class="button button-secondary button-sm" data-action="master-recurring-edit" data-id="' + row.id + '">Edit</button>' +
+          '<button class="button button-secondary button-sm" data-action="master-recurring-toggle-active" data-id="' + row.id + '" data-active="' + (row.active ? '1' : '0') + '">' + (row.active ? 'Deactivate' : 'Reactivate') + '</button>' +
+          '</td>' +
+          '</tr>'
+        );
+      }).join('')
+    : (isExpenseTab ? '<tr><td colspan="5">No expenses yet.</td></tr>' : '<tr><td colspan="10">No recurring bills yet.</td></tr>');
+
+  body.innerHTML =
+    '<section class="card">' +
+    '<div class="master-tabs">' + renderMasterListTabs() + '</div>' +
+    (masterListsUiState.error ? '<p class="message message-error">' + escapeHtml(masterListsUiState.error) + '</p>' : '') +
+    (masterListsUiState.message ? '<p class="message message-success">' + escapeHtml(masterListsUiState.message) + '</p>' : '') +
+    (isExpenseTab ? renderExpenseAddForm() : renderRecurringBillAddForm()) +
+    '<div class="table-wrap">' +
+    '<table class="table master-table">' +
+    (isExpenseTab
+      ? '<thead><tr><th>Name</th><th>Budget Amount</th><th>Active</th><th>Notes</th><th>Actions</th></tr></thead>'
+      : '<thead><tr><th>Name</th><th>Category</th><th>Due</th><th>Amount</th><th>Paid From</th><th>Match Words</th><th>Autopay</th><th>Active</th><th>Notes</th><th>Actions</th></tr></thead>') +
+    '<tbody>' + tableRows + '</tbody>' +
+    '</table>' +
+    '</div>' +
+    '</section>';
+}
+
+function readExpenseForm(prefix) {
+  return {
+    name: document.getElementById(prefix + '-name')?.value || '',
+    budgetAmount: document.getElementById(prefix + '-budget-amount')?.value || 0,
+    active: !!document.getElementById(prefix + '-active')?.checked,
+    notes: document.getElementById(prefix + '-notes')?.value || '',
+  };
+}
+
+function readRecurringBillForm(prefix) {
+  const matchWords = normalizeMatchWordsInput(document.getElementById(prefix + '-match-words')?.value || '');
+  return {
+    name: document.getElementById(prefix + '-name')?.value || '',
+    category: document.getElementById(prefix + '-category')?.value || 'Needs',
+    dueDay: document.getElementById(prefix + '-due-day')?.value || 1,
+    amount: document.getElementById(prefix + '-amount')?.value || 0,
+    paidFrom: document.getElementById(prefix + '-paid-from')?.value || '',
+    matchWords,
+    autopay: document.getElementById(prefix + '-autopay')?.value || '0',
+    active: !!document.getElementById(prefix + '-active')?.checked,
+    notes: document.getElementById(prefix + '-notes')?.value || '',
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Page routing
+// ---------------------------------------------------------------------------
+
+async function renderPage(tabId) {
+  const content = document.getElementById('page-content');
+  if (!content) return;
+  try {
+    if (tabId === 'settings') {
+      await renderSettings(content);
+      return;
+    }
+    if (tabId === 'transactions') {
+      await renderTransactions(content);
+      return;
+    }
+    if (tabId === 'paycheck-planner') {
+      const period = getActiveBudgetPeriod();
+      const periodLabel = getPeriodLabel(period);
+      await renderPaycheckPlanner(content, period, periodLabel);
+      return;
+    }
+    if (tabId === 'recurring-bills') {
+      const period = getActiveBudgetPeriod();
+      const periodLabel = getPeriodLabel(period);
+      await renderRecurringBills(content, period, periodLabel);
+      return;
+    }
+    if (tabId === 'transfers') {
+      const period = getActiveBudgetPeriod();
+      const periodLabel = getPeriodLabel(period);
+      await renderTransfers(content, period, periodLabel);
+      return;
+    }
+    if (tabId === 'dashboard') {
+      const period = getActiveBudgetPeriod();
+      const periodLabel = getPeriodLabel(period);
+      await renderDashboardTab(content, {
+        period,
+        periodLabel,
+        onOpenTab: (nextTab) => {
+          if (activeTab === nextTab) {
+            renderPage(nextTab);
+            return;
+          }
+          activeTab = nextTab;
+          render();
+        },
+        onSyncTransactions: async () => {
+          await syncTransactionsNow();
+        },
+        onReRunAutoMatch: async (selectedPeriod) => {
+          await runRecurringBillsAutoDetectNow(selectedPeriod);
+        },
+        onOpenPaidTransaction: (transactionId) => {
+          pendingReviewTransactionId = transactionId;
+          activeTab = 'transactions';
+          render();
+        },
+      });
+      return;
+    }
+    if (tabId === 'reports') {
+      const period = getActiveBudgetPeriod();
+      await renderReports(content, period, {
+        onOpenTab: (nextTab) => {
+          if (activeTab === nextTab) {
+            renderPage(nextTab);
+            return;
+          }
+          activeTab = nextTab;
+          render();
+        },
+        onSelectPeriod: (periodId) => {
+          applySelectedBudgetPeriod(periodId);
+          renderBudgetPeriodSelector();
+          renderPage('reports');
+        },
+      });
+      return;
+    }
+    if (tabId === 'data-health') {
+      const period = getActiveBudgetPeriod();
+      await renderDataHealth(content, period, {
+        onOpenTab: (nextTab) => {
+          if (activeTab === nextTab) {
+            renderPage(nextTab);
+            return;
+          }
+          activeTab = nextTab;
+          render();
+        },
+      });
+      return;
+    }
+    if (tabId === 'expenses') {
+      await renderExpenses(content);
+      return;
+    }
+    if (tabId === 'history') {
+      const period = getActiveBudgetPeriod();
+      const periodLabel = getPeriodLabel(period);
+      await renderHistory(content, period, periodLabel, {
+        onOpenTab: (nextTab) => {
+          if (activeTab === nextTab) {
+            renderPage(nextTab);
+            return;
+          }
+          activeTab = nextTab;
+          render();
+        },
+      });
+      return;
+    }
+    if (tabId === 'closeout') {
+      const period = getActiveBudgetPeriod();
+      const periodLabel = getPeriodLabel(period);
+      await renderCloseout(content, period, periodLabel);
+      return;
+    }
+    if (tabId === 'master-lists') {
+      await renderMasterLists(content);
+      return;
+    }
+    renderPlaceholderPage(content, tabId);
+  } catch (err) {
+    console.error('Page render failed:', err);
+    renderRenderError(content);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main render
+// ---------------------------------------------------------------------------
+
+function renderBudgetPeriodSelector() {
+  const select = document.getElementById('budget-period-select');
+  if (!select) return;
+  const previous = selectedBudgetPeriodId;
+  select.innerHTML = budgetPeriods
+    .slice()
+    .reverse()
+    .map(
+      (period) =>
+        '<option value="' + period.id + '">' + period.label + '</option>'
+    )
+    .join('');
+  if (!budgetPeriods.some((period) => period.id === previous)) {
+    selectedBudgetPeriodId = resolveSelectedBudgetPeriodId();
+  }
+  select.value = selectedBudgetPeriodId;
+}
+
+function render() {
+  const app = document.querySelector('#app');
+  if (!app) return;
+  app.innerHTML =
+    '<div class="app-layout">' +
+    '<aside class="sidebar">' +
+    '<div class="sidebar-brand">' +
+    '<h1>Budget Dashboard</h1>' +
+    '<p class="sidebar-subtitle">Local Personal Finance</p>' +
+    '</div>' +
+    '<nav class="nav" id="main-nav" aria-label="Primary"></nav>' +
+    '</aside>' +
+    '<main class="content">' +
+    '<section class="card budget-period-selector">' +
+    '<label for="budget-period-select">Budget Period</label>' +
+    '<select id="budget-period-select"></select>' +
+    '</section>' +
+    '<section id="page-content"></section>' +
+    '</main>' +
+    '</div>';
+  const nav = document.querySelector('#main-nav');
+  tabs.forEach(function (tab) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'nav-btn' + (tab.id === activeTab ? ' active' : '');
+    button.textContent = tab.label;
+    button.addEventListener('click', function () {
+      if (activeTab === tab.id) return;
+      activeTab = tab.id;
+      render();
+    });
+    nav.appendChild(button);
+  });
+
+  renderBudgetPeriodSelector();
+  renderPage(activeTab);
+}
+
+// ---------------------------------------------------------------------------
+// Global delegated click handler for settings actions
+// ---------------------------------------------------------------------------
+
+document.addEventListener('click', async function (e) {
+  const btn = e.target.closest('[data-action]');
+  if (!btn) return;
+  const action = btn.dataset.action;
+  if (action === 'connect-plaid') await handleConnectPlaid(btn);
+  else if (action === 'sync-transactions') await handleSyncTransactions(btn);
+  else if (action === 'remove-plaid-item') await handleRemovePlaidItem(btn);
+  else if (action === 'cleanup-removed-plaid') await handleCleanupRemovedPlaidData(btn);
+  else if (action === 'data-tools-cleanup-removed-plaid') await handleCleanupRemovedPlaidData(btn);
+  else if (action === 'data-tools-run-health') {
+    activeTab = 'data-health';
+    render();
+  }
+  else if (action === 'data-tools-export-backup') {
+    window.open(BACKEND + '/api/backup/export', '_blank', 'noopener');
+  }
+  else if (action === 'show-all-synced') {
+    transactionsViewMode = 'all';
+    applyBudgetPeriodToActivePage();
+  }
+  else if (action === 'use-budget-period') {
+    transactionsViewMode = 'period';
+    applyBudgetPeriodToActivePage();
+  }
+  else if (action === 'review-transaction') {
+    openReviewModal(btn.dataset.id);
+  }
+  else if (action === 'expense-review-transaction') {
+    pendingReviewTransactionId = btn.dataset.id;
+    activeTab = 'transactions';
+    render();
+  }
+  else if (action === 'close-review-modal') {
+    closeReviewModal();
+  }
+  else if (action === 'toggle-ignore-transaction') {
+    const transaction = getTransactionById(btn.dataset.id);
+    if (!transaction) return;
+    transactionsMessage = '';
+    btn.disabled = true;
+    btn.dataset.loading = 'true';
+    try {
+      if (transaction.ignored) {
+        await patchTransactionReview(transaction.id, {
+          ignored: false,
+          reviewed: true,
+        });
+      } else {
+        await patchTransactionReview(transaction.id, {
+          type: 'Ignore',
+          category: 'Ignore',
+          ignored: true,
+          reviewed: true,
+        });
+      }
+      await applyBudgetPeriodToActivePage();
+    } catch (err) {
+      console.error('Failed to update ignored state:', err);
+      if (err.message.includes('Failed to fetch')) {
+        transactionsMessage = 'Backend not running on http://localhost:8787.';
+      } else if (err.message.includes('not found')) {
+        transactionsMessage = 'PATCH /api/transactions/:id is missing or unavailable.';
+      } else {
+        transactionsMessage = 'Failed to update transaction: ' + err.message;
+      }
+      applyBudgetPeriodToActivePage();
+    } finally {
+      btn.disabled = false;
+      btn.dataset.loading = '';
+    }
+  }
+  else if (action === 'save-transaction-review') {
+    if (!reviewModalTransactionId || !reviewDraft) return;
+    const errorEl = document.getElementById('review-error');
+    transactionsMessage = '';
+    btn.disabled = true;
+    btn.dataset.loading = 'true';
+    if (errorEl) errorEl.textContent = '';
+    try {
+      await patchTransactionReview(reviewModalTransactionId, {
+        type: reviewDraft.type,
+        category: reviewDraft.category,
+        notes: reviewDraft.notes,
+        reviewed: true,
+        ignored: !!reviewDraft.ignored,
+      });
+      reviewModalTransactionId = null;
+      reviewDraft = null;
+      transactionsMessage = '';
+      await applyBudgetPeriodToActivePage();
+    } catch (err) {
+      console.error('Failed to save review:', err);
+      if (errorEl) {
+        if (err.message.includes('not found')) {
+          errorEl.textContent = 'PATCH /api/transactions/:id is missing or unavailable.';
+        } else if (err.message.includes('Failed to fetch')) {
+          errorEl.textContent = 'Backend not running on http://localhost:8787.';
+        } else {
+          errorEl.textContent = err.message;
+        }
+      }
+    } finally {
+      btn.disabled = false;
+      btn.dataset.loading = '';
+    }
+  }
+  else if (action === 'preview-rules' || action === 'apply-rules') {
+    transactionsMessage = '';
+    btn.disabled = true;
+    btn.dataset.loading = 'true';
+    try {
+      const periodId = transactionsViewMode === 'period' ? getActiveBudgetPeriod().id : undefined;
+      const result = await runRulesApplyRequest(action === 'preview-rules', periodId);
+      const previewSample = (result.preview || [])
+        .slice(0, 3)
+        .map((row) => row.merchantName || row.name || row.transactionId)
+        .join(', ');
+      transactionsMessage = action === 'preview-rules'
+        ? 'Rule preview: ' + result.matchedCount + ' transaction(s) matched.' + (previewSample ? ' Sample: ' + previewSample + '.' : '')
+        : 'Rules applied: ' + result.updatedCount + ' transaction(s) updated from ' + result.matchedCount + ' match(es).';
+      transactionsMessageType = 'success';
+      await applyBudgetPeriodToActivePage();
+      if (action === 'apply-rules') {
+        window.dispatchEvent(new CustomEvent('budget:transactions-updated'));
+      }
+    } catch (err) {
+      console.error('Rules action failed:', err);
+      transactionsMessage = err.message.includes('Failed to fetch')
+        ? 'Backend not running on http://localhost:8787.'
+        : err.message;
+      transactionsMessageType = 'error';
+      applyBudgetPeriodToActivePage();
+    } finally {
+      btn.disabled = false;
+      btn.dataset.loading = '';
+    }
+  }
+  else if (action === 'create-rule-from-transaction') {
+    const transaction = getTransactionById(btn.dataset.id);
+    if (!transaction || !reviewDraft) return;
+    openRuleEditor({
+      source: 'transactions',
+      transaction,
+    });
+  }
+  else if (action === 'rules-add') {
+    openRuleEditor({ source: 'settings' });
+  }
+  else if (action === 'rules-edit') {
+    btn.disabled = true;
+    btn.dataset.loading = 'true';
+    try {
+      const rules = await fetchRules();
+      const rule = rules.find((item) => item.id === btn.dataset.id);
+      if (!rule) throw new Error('Rule not found.');
+      openRuleEditor({
+        source: 'settings',
+        rule,
+      });
+    } catch (err) {
+      if (String(err.message || '') !== 'Rule not found.') {
+        rulesManagerMessage = err.message;
+        rulesManagerMessageType = 'error';
+        const content = document.getElementById('page-content');
+        if (content && activeTab === 'settings') await renderSettings(content);
+      }
+    } finally {
+      btn.disabled = false;
+      btn.dataset.loading = '';
+    }
+  }
+  else if (action === 'close-rule-editor') {
+    closeRuleEditor();
+  }
+  else if (action === 'save-rule-editor') {
+    if (!ruleEditorState || !ruleEditorState.draft) return;
+    const draft = normalizeRuleDraft(ruleEditorState.draft);
+    if (!draft.match_value) {
+      ruleEditorState = {
+        ...ruleEditorState,
+        draft,
+        error: 'Match value is required.',
+      };
+      applyBudgetPeriodToActivePage();
+      return;
+    }
+
+    btn.disabled = true;
+    btn.dataset.loading = 'true';
+    try {
+      const payload = {
+        name: draft.name || draft.match_value,
+        enabled: draft.enabled,
+        match_type: draft.match_type,
+        match_value: draft.match_value,
+        account_id: draft.account_id || null,
+        amount_min: draft.amount_min === '' ? null : draft.amount_min,
+        amount_max: draft.amount_max === '' ? null : draft.amount_max,
+        set_type: draft.set_ignored ? 'Ignore' : draft.set_type,
+        set_category: draft.set_ignored ? 'Ignore' : draft.set_category,
+        set_ignored: draft.set_ignored,
+        apply_to_unreviewed_only: draft.apply_to_unreviewed_only,
+      };
+
+      if (draft.mode === 'edit' && draft.id) {
+        await patchRule(draft.id, payload);
+        rulesManagerMessage = 'Rule updated.';
+      } else {
+        await createRule(payload);
+        if (draft.source === 'transactions') {
+          transactionsMessage = 'Rule created for ' + draft.match_value + '.';
+          transactionsMessageType = 'success';
+        }
+        rulesManagerMessage = 'Rule added.';
+      }
+      rulesManagerMessageType = 'success';
+      closeRuleEditor();
+    } catch (err) {
+      ruleEditorState = {
+        ...ruleEditorState,
+        draft,
+        error: err.message,
+      };
+      applyBudgetPeriodToActivePage();
+    } finally {
+      btn.disabled = false;
+      btn.dataset.loading = '';
+    }
+  }
+  else if (action === 'rules-toggle-enabled') {
+    const isEnabled = btn.dataset.enabled === '1';
+    btn.disabled = true;
+    btn.dataset.loading = 'true';
+    try {
+      await patchRule(btn.dataset.id, { enabled: !isEnabled });
+      rulesManagerMessage = isEnabled ? 'Rule disabled.' : 'Rule enabled.';
+      rulesManagerMessageType = 'success';
+      const content = document.getElementById('page-content');
+      if (content && activeTab === 'settings') await renderSettings(content);
+    } catch (err) {
+      rulesManagerMessage = err.message;
+      rulesManagerMessageType = 'error';
+      const content = document.getElementById('page-content');
+      if (content && activeTab === 'settings') await renderSettings(content);
+    } finally {
+      btn.disabled = false;
+      btn.dataset.loading = '';
+    }
+  }
+  else if (action === 'master-list-tab') {
+    masterListsUiState.activeTab = btn.dataset.listType;
+    masterListsUiState.error = '';
+    masterListsUiState.message = '';
+    masterListsUiState.editingId = null;
+    masterListsUiState.editingType = '';
+    applyBudgetPeriodToActivePage();
+  }
+  else if (action === 'master-expense-add') {
+    masterListsUiState.error = '';
+    masterListsUiState.message = '';
+    btn.disabled = true;
+    btn.dataset.loading = 'true';
+    try {
+      const form = readExpenseForm('expense-add');
+      const res = await fetch(BACKEND + '/api/master-lists/expenses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(form),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to add expense.');
+
+      await fetchMasterLists(true);
+      masterListsUiState.message = 'Expense added.';
+      applyBudgetPeriodToActivePage();
+    } catch (err) {
+      console.error('Add expense item failed:', err);
+      masterListsUiState.error = err.message.includes('Failed to fetch')
+        ? 'Backend not running on http://localhost:8787.'
+        : err.message;
+      applyBudgetPeriodToActivePage();
+    } finally {
+      btn.disabled = false;
+      btn.dataset.loading = '';
+    }
+  }
+  else if (action === 'master-expense-edit') {
+    masterListsUiState.editingId = btn.dataset.id;
+    masterListsUiState.editingType = 'expense';
+    masterListsUiState.error = '';
+    masterListsUiState.message = '';
+    applyBudgetPeriodToActivePage();
+  }
+  else if (action === 'master-expense-cancel') {
+    masterListsUiState.editingId = null;
+    masterListsUiState.editingType = '';
+    applyBudgetPeriodToActivePage();
+  }
+  else if (action === 'master-expense-save') {
+    masterListsUiState.error = '';
+    masterListsUiState.message = '';
+    btn.disabled = true;
+    btn.dataset.loading = 'true';
+    try {
+      const form = readExpenseForm('expense-edit');
+      const res = await fetch(BACKEND + '/api/master-lists/expenses/' + encodeURIComponent(btn.dataset.id), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(form),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to save expense.');
+
+      masterListsUiState.editingId = null;
+      masterListsUiState.editingType = '';
+      await fetchMasterLists(true);
+      masterListsUiState.message = 'Expense updated.';
+      applyBudgetPeriodToActivePage();
+    } catch (err) {
+      console.error('Save expense item failed:', err);
+      masterListsUiState.error = err.message.includes('Failed to fetch')
+        ? 'Backend not running on http://localhost:8787.'
+        : err.message;
+      applyBudgetPeriodToActivePage();
+    } finally {
+      btn.disabled = false;
+      btn.dataset.loading = '';
+    }
+  }
+  else if (action === 'master-expense-toggle-active') {
+    masterListsUiState.error = '';
+    masterListsUiState.message = '';
+    const activeNow = btn.dataset.active === '1';
+    btn.disabled = true;
+    btn.dataset.loading = 'true';
+    try {
+      const res = activeNow
+        ? await fetch(BACKEND + '/api/master-lists/expenses/' + encodeURIComponent(btn.dataset.id), {
+            method: 'DELETE',
+          })
+        : await fetch(BACKEND + '/api/master-lists/expenses/' + encodeURIComponent(btn.dataset.id), {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ active: true }),
+          });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to update expense status.');
+
+      await fetchMasterLists(true);
+      masterListsUiState.message = activeNow ? 'Expense deactivated.' : 'Expense reactivated.';
+      applyBudgetPeriodToActivePage();
+    } catch (err) {
+      console.error('Toggle expense item failed:', err);
+      masterListsUiState.error = err.message.includes('Failed to fetch')
+        ? 'Backend not running on http://localhost:8787.'
+        : err.message;
+      applyBudgetPeriodToActivePage();
+    } finally {
+      btn.disabled = false;
+      btn.dataset.loading = '';
+    }
+  }
+  else if (action === 'master-recurring-add') {
+    masterListsUiState.error = '';
+    masterListsUiState.message = '';
+    btn.disabled = true;
+    btn.dataset.loading = 'true';
+    try {
+      const form = readRecurringBillForm('recurring-add');
+      const res = await fetch(BACKEND + '/api/master-lists/recurring-bills', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(form),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to add recurring bill.');
+
+      await fetchMasterLists(true);
+      masterListsUiState.message = 'Recurring bill added.';
+      applyBudgetPeriodToActivePage();
+    } catch (err) {
+      console.error('Add recurring bill failed:', err);
+      masterListsUiState.error = err.message.includes('Failed to fetch')
+        ? 'Backend not running on http://localhost:8787.'
+        : err.message;
+      applyBudgetPeriodToActivePage();
+    } finally {
+      btn.disabled = false;
+      btn.dataset.loading = '';
+    }
+  }
+  else if (action === 'master-recurring-edit') {
+    masterListsUiState.editingId = btn.dataset.id;
+    masterListsUiState.editingType = 'recurring-bills';
+    masterListsUiState.error = '';
+    masterListsUiState.message = '';
+    applyBudgetPeriodToActivePage();
+  }
+  else if (action === 'master-recurring-cancel') {
+    masterListsUiState.editingId = null;
+    masterListsUiState.editingType = '';
+    applyBudgetPeriodToActivePage();
+  }
+  else if (action === 'master-recurring-save') {
+    masterListsUiState.error = '';
+    masterListsUiState.message = '';
+    btn.disabled = true;
+    btn.dataset.loading = 'true';
+    try {
+      const form = readRecurringBillForm('recurring-edit');
+      const res = await fetch(BACKEND + '/api/master-lists/recurring-bills/' + encodeURIComponent(btn.dataset.id), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(form),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to save recurring bill.');
+
+      masterListsUiState.editingId = null;
+      masterListsUiState.editingType = '';
+      await fetchMasterLists(true);
+      masterListsUiState.message = 'Recurring bill updated.';
+      applyBudgetPeriodToActivePage();
+    } catch (err) {
+      console.error('Save recurring bill failed:', err);
+      masterListsUiState.error = err.message.includes('Failed to fetch')
+        ? 'Backend not running on http://localhost:8787.'
+        : err.message;
+      applyBudgetPeriodToActivePage();
+    } finally {
+      btn.disabled = false;
+      btn.dataset.loading = '';
+    }
+  }
+  else if (action === 'master-recurring-toggle-active') {
+    masterListsUiState.error = '';
+    masterListsUiState.message = '';
+    const activeNow = btn.dataset.active === '1';
+    btn.disabled = true;
+    btn.dataset.loading = 'true';
+    try {
+      const res = activeNow
+        ? await fetch(BACKEND + '/api/master-lists/recurring-bills/' + encodeURIComponent(btn.dataset.id), {
+            method: 'DELETE',
+          })
+        : await fetch(BACKEND + '/api/master-lists/recurring-bills/' + encodeURIComponent(btn.dataset.id), {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ active: true }),
+          });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to update recurring bill status.');
+
+      await fetchMasterLists(true);
+      masterListsUiState.message = activeNow ? 'Recurring bill deactivated.' : 'Recurring bill reactivated.';
+      applyBudgetPeriodToActivePage();
+    } catch (err) {
+      console.error('Toggle recurring bill failed:', err);
+      masterListsUiState.error = err.message.includes('Failed to fetch')
+        ? 'Backend not running on http://localhost:8787.'
+        : err.message;
+      applyBudgetPeriodToActivePage();
+    } finally {
+      btn.disabled = false;
+      btn.dataset.loading = '';
+    }
+  }
+});
+
+document.addEventListener('change', function (e) {
+  if (e.target && e.target.id === 'budget-period-select') {
+    applySelectedBudgetPeriod(e.target.value);
+    applyBudgetPeriodToActivePage();
+  }
+  if (e.target && e.target.id === 'tx-type-filter') {
+    transactionsFilters.type = e.target.value;
+    transactionsFilters.category = 'All';
+    applyBudgetPeriodToActivePage();
+  }
+  if (e.target && e.target.id === 'tx-category-filter') {
+    transactionsFilters.category = e.target.value;
+    applyBudgetPeriodToActivePage();
+  }
+  if (e.target && e.target.id === 'tx-reviewed-filter') {
+    transactionsFilters.reviewed = e.target.value;
+    applyBudgetPeriodToActivePage();
+  }
+  if (e.target && e.target.id === 'tx-show-ignored') {
+    transactionsFilters.showIgnored = !!e.target.checked;
+    applyBudgetPeriodToActivePage();
+  }
+  if (e.target && e.target.id === 'review-type' && reviewModalTransactionId) {
+    const transaction = getTransactionById(reviewModalTransactionId);
+    if (!transaction || !reviewDraft) return;
+    reviewDraft = normalizeReviewDraft(transaction, {
+      ...reviewDraft,
+      type: e.target.value,
+      forceCoerceCategory: true,
+    });
+    applyBudgetPeriodToActivePage();
+  }
+  if (e.target && e.target.id === 'review-category' && reviewDraft) {
+    reviewDraft = {
+      ...reviewDraft,
+      category: e.target.value,
+    };
+  }
+  if (e.target && e.target.id === 'review-reviewed' && reviewDraft) {
+    reviewDraft = {
+      ...reviewDraft,
+      reviewed: !!e.target.checked,
+    };
+  }
+  if (e.target && e.target.id === 'rule-match-type' && ruleEditorState?.draft) {
+    ruleEditorState = {
+      ...ruleEditorState,
+      error: '',
+      draft: normalizeRuleDraft({
+        ...ruleEditorState.draft,
+        match_type: e.target.value,
+      }),
+    };
+  }
+  if (e.target && e.target.id === 'rule-account-id' && ruleEditorState?.draft) {
+    ruleEditorState = {
+      ...ruleEditorState,
+      error: '',
+      draft: normalizeRuleDraft({
+        ...ruleEditorState.draft,
+        account_id: e.target.value,
+      }),
+    };
+  }
+  if (e.target && e.target.id === 'rule-set-type' && ruleEditorState?.draft) {
+    ruleEditorState = {
+      ...ruleEditorState,
+      error: '',
+      draft: normalizeRuleDraft({
+        ...ruleEditorState.draft,
+        set_type: e.target.value,
+        set_ignored: e.target.value === 'Ignore',
+      }),
+    };
+    applyBudgetPeriodToActivePage();
+  }
+  if (e.target && e.target.id === 'rule-set-category' && ruleEditorState?.draft) {
+    ruleEditorState = {
+      ...ruleEditorState,
+      error: '',
+      draft: normalizeRuleDraft({
+        ...ruleEditorState.draft,
+        set_category: e.target.value,
+      }),
+    };
+  }
+  if (e.target && e.target.id === 'rule-enabled' && ruleEditorState?.draft) {
+    ruleEditorState = {
+      ...ruleEditorState,
+      error: '',
+      draft: normalizeRuleDraft({
+        ...ruleEditorState.draft,
+        enabled: !!e.target.checked,
+      }),
+    };
+  }
+  if (e.target && e.target.id === 'rule-unreviewed-only' && ruleEditorState?.draft) {
+    ruleEditorState = {
+      ...ruleEditorState,
+      error: '',
+      draft: normalizeRuleDraft({
+        ...ruleEditorState.draft,
+        apply_to_unreviewed_only: !!e.target.checked,
+      }),
+    };
+  }
+  if (e.target && e.target.id === 'rule-set-ignored' && ruleEditorState?.draft) {
+    ruleEditorState = {
+      ...ruleEditorState,
+      error: '',
+      draft: normalizeRuleDraft({
+        ...ruleEditorState.draft,
+        set_ignored: !!e.target.checked,
+        set_type: e.target.checked ? 'Ignore' : (ruleEditorState.draft.set_type === 'Ignore' ? 'Expense' : ruleEditorState.draft.set_type),
+      }),
+    };
+    applyBudgetPeriodToActivePage();
+  }
+});
+
+document.addEventListener('input', function (e) {
+  if (e.target && e.target.id === 'tx-search') {
+    transactionsFilters.search = e.target.value;
+    applyBudgetPeriodToActivePage();
+  }
+  if (e.target && e.target.id === 'review-notes' && reviewDraft) {
+    reviewDraft = {
+      ...reviewDraft,
+      notes: e.target.value,
+    };
+  }
+  if (e.target && e.target.id === 'rule-name' && ruleEditorState?.draft) {
+    ruleEditorState = {
+      ...ruleEditorState,
+      error: '',
+      draft: {
+        ...ruleEditorState.draft,
+        name: e.target.value,
+      },
+    };
+  }
+  if (e.target && e.target.id === 'rule-match-value' && ruleEditorState?.draft) {
+    ruleEditorState = {
+      ...ruleEditorState,
+      error: '',
+      draft: {
+        ...ruleEditorState.draft,
+        match_value: e.target.value,
+      },
+    };
+  }
+  if (e.target && e.target.id === 'rule-amount-min' && ruleEditorState?.draft) {
+    ruleEditorState = {
+      ...ruleEditorState,
+      error: '',
+      draft: {
+        ...ruleEditorState.draft,
+        amount_min: e.target.value,
+      },
+    };
+  }
+  if (e.target && e.target.id === 'rule-amount-max' && ruleEditorState?.draft) {
+    ruleEditorState = {
+      ...ruleEditorState,
+      error: '',
+      draft: {
+        ...ruleEditorState.draft,
+        amount_max: e.target.value,
+      },
+    };
+  }
+});
+
+document.addEventListener('keydown', function (e) {
+  if (e.key === 'Escape' && ruleEditorState) {
+    closeRuleEditor();
+  }
+  else if (e.key === 'Escape' && reviewModalTransactionId) {
+    closeReviewModal();
+  }
+});
+
+// Reload transactions page when sync completes
+window.addEventListener('budget:transactions-updated', function () {
+  if (activeTab === 'transactions') {
+    const content = document.getElementById('page-content');
+    if (content) renderTransactions(content);
+  } else if (activeTab === 'dashboard') {
+    const content = document.getElementById('page-content');
+    if (content) renderPage('dashboard');
+  } else if (activeTab === 'paycheck-planner') {
+    const content = document.getElementById('page-content');
+    if (content) renderPage('paycheck-planner');
+  } else if (activeTab === 'recurring-bills') {
+    const content = document.getElementById('page-content');
+    if (content) renderPage('recurring-bills');
+  } else if (activeTab === 'transfers') {
+    const content = document.getElementById('page-content');
+    if (content) renderPage('transfers');
+  } else if (activeTab === 'closeout') {
+    const content = document.getElementById('page-content');
+    if (content) renderPage('closeout');
+  } else if (activeTab === 'data-health') {
+    const content = document.getElementById('page-content');
+    if (content) renderPage('data-health');
+  } else if (activeTab === 'reports') {
+    const content = document.getElementById('page-content');
+    if (content) renderPage('reports');
+  }
+});
+
+window.addEventListener('budget:recurring-bills-updated', function () {
+  if (activeTab === 'dashboard' || activeTab === 'paycheck-planner' || activeTab === 'recurring-bills' || activeTab === 'transfers' || activeTab === 'closeout') {
+    renderPage(activeTab);
+  }
+});
+
+window.addEventListener('budget:income-updated', function () {
+  if (activeTab === 'paycheck-planner' || activeTab === 'recurring-bills' || activeTab === 'transfers' || activeTab === 'closeout') {
+    renderPage(activeTab);
+  }
+});
+
+window.addEventListener('budget:period-changed', function () {
+  if (PERIOD_AWARE_TABS.has(activeTab)) {
+    renderPage(activeTab);
+  }
+});
+
+window.addEventListener('budget:planner-refresh', function () {
+  if (activeTab === 'paycheck-planner' || activeTab === 'transfers' || activeTab === 'closeout') {
+    renderPage(activeTab);
+  }
+});
+
+render();

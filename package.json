@@ -1,0 +1,26 @@
+{
+  "name": "budget-dashboard",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 5173 --strictPort",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 4173",
+    "server": "node server/index.js",
+    "dev:all": "concurrently \"npm run server\" \"npm run dev\"",
+    "zip:clean": "zip -r budget-dashboard-clean.zip . -x '.env' '.env.*' 'data/*' 'node_modules/*' 'dist/*' '*.db' '*.sqlite' '*.sqlite3' '*.zip'",
+    "check:shared": "node scripts/check-shared-domain.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.6.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "plaid": "^29.0.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "vite": "^8.0.10"
+  }
+}
