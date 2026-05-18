@@ -7,7 +7,7 @@
  */
 
 import { isDateInBudgetPeriod, parseLocalDate } from './budgetPeriods.js';
-import { calculateBudgetSplit, calculateTransferPlan, calculateWantsActuals } from './transfers.js';
+import { calculateBudgetSplit, calculateTransferPlan, calculateWantsActuals, getTransferTargetsConfig } from './transfers.js';
 import { calculateExpenseBudget, expandExpenseTransactionsWithFinalSplits } from './expenses.js';
 import { calculateRecurringBillsDue } from './recurringBills.js';
 import { getDetectedPayrollIncome, isCiscoPayrollTransaction } from './payrollDetection.js';
@@ -215,6 +215,7 @@ export function buildPayPeriodSummary({
 
   const manualIncomeByPeriod = getSettingMap(settings, ['manualIncomeByPeriod', 'budgetIncomeByPeriod', 'budget_income_by_period']);
   const autoDetectedIncomeByPeriod = getSettingMap(settings, ['autoDetectedIncomeByPeriod', 'auto_detected_income_by_period']);
+  const transferTargets = getTransferTargetsConfig(settings?.transferTargets || settings?.transfer_targets || {});
 
   const allIncomeOrPayrollTransactions = (transactions || []).filter((row) => {
     if (!row || row.ignored) return false;
@@ -379,7 +380,7 @@ export function buildPayPeriodSummary({
   const overBudgetCount = categoryRows.filter((row) => row.overBudget).length;
 
   // ── Wants + transfers ──────────────────────────────────────────────────────
-  const wantsActuals = calculateWantsActuals({ transactions: periodTransactions, period });
+  const wantsActuals = calculateWantsActuals({ transactions: periodTransactions, period, transferTargets });
 
   const splitSummary = calculateBudgetSplit({
     budgetIncome,
@@ -391,6 +392,8 @@ export function buildPayPeriodSummary({
     splitSummary,
     expenseBudget,
     wantsActuals,
+    transferTargets,
+    budgetIncome,
   });
 
   // ── Safe money ─────────────────────────────────────────────────────────────
@@ -407,11 +410,10 @@ export function buildPayPeriodSummary({
     recurringBillsLeftToPay: unpaidTotal,
     expenseBudgetRemaining: expenseBudget.totalExpenseBudget - actualTotal,
     expenseOverrun: Math.max(0, actualTotal - budgetTotal),
-    requiredTransfersRemaining:
-      Math.max(0, transferPlan.joshTransfer) +
-      Math.max(0, transferPlan.taylorTransfer) +
-      Math.max(0, transferPlan.discoverTransfer) +
-      Math.max(0, transferPlan.debtSavingsTransfer),
+    requiredTransfersRemaining: (transferPlan.targetRows || []).reduce(
+      (sum, row) => sum + Math.max(0, toNumber(row.transferNeeded, 0)),
+      0
+    ),
     safetyBuffer: safeMoneySettings.safetyBuffer,
     includePendingTransactions,
   });
@@ -490,6 +492,7 @@ export function buildPayPeriodSummary({
     },
     wants: {
       remaining: transferPlan.wantsRemaining,
+      targets: wantsActuals.targets || [],
       joshSpent: wantsActuals.joshActual,
       taylorSpent: wantsActuals.taylorActual,
       splitSpent: wantsActuals.splitTotal,
@@ -503,6 +506,7 @@ export function buildPayPeriodSummary({
     },
     transfers: {
       total: transferPlan.totalPlannedTransfers,
+      rows: transferPlan.targetRows || [],
       josh: transferPlan.joshTransfer,
       taylor: transferPlan.taylorTransfer,
       discover: transferPlan.discoverTransfer,

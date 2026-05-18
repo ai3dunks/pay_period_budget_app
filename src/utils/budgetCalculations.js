@@ -1,5 +1,13 @@
 // Temporary compatibility wrapper. Shared logic lives in /shared.
-export { calculateBudgetSplit, calculateWantsActuals, calculateTransferPlan, calculateFlexibleBudgetSplitEngine } from '../../shared/transfers.js';
+export {
+  calculateBudgetSplit,
+  calculateWantsActuals,
+  calculateTransferPlan,
+  calculateFlexibleBudgetSplitEngine,
+  DEFAULT_TRANSFER_TARGETS,
+  getTransferTargetsConfig,
+  isTransferTargetsConfigMissing,
+} from '../../shared/transfers.js';
 export { calculateExpenseBudget } from '../../shared/expenses.js';
 export {
   calculateRecurringBillsDue,

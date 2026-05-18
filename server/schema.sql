@@ -253,6 +253,8 @@ CREATE TABLE IF NOT EXISTS debt_savings_transfer_confirmations (
   start_date TEXT DEFAULT '',
   end_date TEXT DEFAULT '',
   amount REAL DEFAULT 0,
+  source_target_id TEXT DEFAULT '',
+  source_target_name TEXT DEFAULT '',
   source_account TEXT DEFAULT '',
   destination_account TEXT DEFAULT '',
   status TEXT DEFAULT 'transfer_confirmed',
@@ -313,6 +315,9 @@ ON cash_flow_forecast_adjustments(budget_period_id, date);
 
 CREATE INDEX IF NOT EXISTS idx_transfer_confirmations_period_target 
 ON transfer_confirmations(budget_period_id, target_name);
+
+CREATE INDEX IF NOT EXISTS idx_debt_savings_transfer_period_target
+ON debt_savings_transfer_confirmations(budget_period_id, source_target_id);
 
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date);
 CREATE INDEX IF NOT EXISTS idx_transactions_period_review ON transactions(date, reviewed, ignored, pending);

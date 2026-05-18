@@ -444,6 +444,9 @@ function toTransferRow(row) {
     startDate: row.start_date || '',
     endDate: row.end_date || '',
     amount: Number(row.amount || 0),
+    confirmedAmount: Number(row.amount || 0),
+    sourceTargetId: row.source_target_id || '',
+    sourceTargetName: row.source_target_name || '',
     sourceAccount: row.source_account || '',
     destinationAccount: row.destination_account || '',
     status: row.status || 'transfer_confirmed',
@@ -491,16 +494,18 @@ router.post('/snowball-transfers', (req, res) => {
     const id = randomUUID();
     const periodId = String(req.body?.budgetPeriodId || '').trim();
     if (!periodId) return res.status(400).json({ error: 'Budget period ID is required.' });
-    const amount = parseAmount(req.body?.amount ?? 0, 'Amount');
+    const amount = parseAmount(req.body?.confirmedAmount ?? req.body?.amount ?? 0, 'Amount');
     const status = validateTransferStatus(req.body?.status || 'transfer_confirmed');
     db.prepare(
       `INSERT INTO debt_savings_transfer_confirmations
-       (id, budget_period_id, start_date, end_date, amount, source_account, destination_account, status, confirmed_at, notes, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       (id, budget_period_id, start_date, end_date, amount, source_target_id, source_target_name, source_account, destination_account, status, confirmed_at, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id, periodId,
       String(req.body?.startDate || ''), String(req.body?.endDate || ''),
       amount,
+      String(req.body?.sourceTargetId || ''),
+      String(req.body?.sourceTargetName || ''),
       String(req.body?.sourceAccount || ''), String(req.body?.destinationAccount || ''),
       status, now,
       String(req.body?.notes || ''), now, now
@@ -523,10 +528,26 @@ router.patch('/snowball-transfers/:id', (req, res) => {
     if (req.body?.status !== undefined) {
       updates.push('status = ?');
       values.push(validateTransferStatus(req.body.status));
+      updates.push('confirmed_at = ?');
+      values.push(now);
     }
     if (req.body?.amount !== undefined) {
       updates.push('amount = ?');
       values.push(parseAmount(req.body.amount, 'Amount'));
+    }
+    if (req.body?.confirmedAmount !== undefined) {
+      updates.push('amount = ?');
+      values.push(parseAmount(req.body.confirmedAmount, 'Amount'));
+      updates.push('confirmed_at = ?');
+      values.push(now);
+    }
+    if (req.body?.sourceTargetId !== undefined) {
+      updates.push('source_target_id = ?');
+      values.push(String(req.body.sourceTargetId || '').trim());
+    }
+    if (req.body?.sourceTargetName !== undefined) {
+      updates.push('source_target_name = ?');
+      values.push(String(req.body.sourceTargetName || '').trim());
     }
     if (req.body?.notes !== undefined) {
       updates.push('notes = ?');

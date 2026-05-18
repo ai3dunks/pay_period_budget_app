@@ -8,7 +8,7 @@
 import { generateBudgetPeriods, getCurrentBudgetPeriod, isDateInBudgetPeriod } from '../shared/budgetPeriods.js';
 import { getDetectedPayrollIncome, isCiscoPayrollTransaction } from '../shared/payrollDetection.js';
 import { getExpenseTransactionsForPeriod, calculateExpenseActuals } from '../shared/expenses.js';
-import { calculateBudgetSplit, calculateWantsActuals, calculateTransferPlan } from '../shared/transfers.js';
+import { calculateBudgetSplit, calculateWantsActuals, calculateTransferPlan, DEFAULT_TRANSFER_TARGETS } from '../shared/transfers.js';
 import { applyRulesToTransactions } from '../shared/transactionRules.js';
 import { isValidPeriod, isValidMoneyAmount, isValidTransactionType } from '../shared/validation.js';
 import { parseMatchWords } from '../shared/text.js';
@@ -233,6 +233,64 @@ assert('Josh transfer expected', transferPlan.joshTransfer === 55, JSON.stringif
 assert('Taylor transfer expected', transferPlan.taylorTransfer === 25, JSON.stringify(transferPlan));
 assert('Discover transfer expected', transferPlan.discoverTransfer === 400, JSON.stringify(transferPlan));
 assert('Debt/Savings transfer expected', transferPlan.debtSavingsTransfer === 0, JSON.stringify(transferPlan));
+
+const transferTargetsWithRiley = [
+  ...DEFAULT_TRANSFER_TARGETS.filter((target) => target.id !== 'discover' && target.id !== 'debt-savings'),
+  {
+    id: 'riley',
+    name: 'Riley',
+    active: true,
+    targetKind: 'person',
+    budgetGroup: 'Wants',
+    allocationMethod: 'equal_split',
+    weight: 1,
+    fixedAmount: 0,
+    percentage: 0,
+    capAmount: 0,
+    priority: 30,
+    destinationAccountId: '',
+    trackSpendingAgainstTarget: true,
+    connectedModule: 'wants',
+    confirmAction: 'create_transfer_confirmation',
+    notes: '',
+    createdAt: '',
+    updatedAt: '',
+  },
+  ...DEFAULT_TRANSFER_TARGETS.filter((target) => target.id === 'discover' || target.id === 'debt-savings'),
+];
+
+const rileyPlan = calculateTransferPlan({
+  splitSummary: splitSummaryForPlan,
+  expenseBudget: { totalExpenseBudget: 400 },
+  wantsActuals: {
+    targets: [
+      { targetId: 'josh', actualSpent: 20, directSpent: 20, splitShare: 0 },
+      { targetId: 'taylor', actualSpent: 50, directSpent: 50, splitShare: 0 },
+      { targetId: 'riley', actualSpent: 10, directSpent: 10, splitShare: 0 },
+    ],
+  },
+  transferTargets: transferTargetsWithRiley,
+});
+assert('Riley equal split adds third Wants target', rileyPlan.targetRows.filter((row) => row.budgetGroup === 'Wants').length === 3, JSON.stringify(rileyPlan.targetRows));
+assert('Josh transfer becomes 30 with Riley active', rileyPlan.joshTransfer === 30, JSON.stringify(rileyPlan));
+assert('Taylor transfer becomes 0 with Riley active', rileyPlan.taylorTransfer === 0, JSON.stringify(rileyPlan));
+assert('Riley transfer becomes 40 with Riley active', (rileyPlan.targetRows.find((row) => row.id === 'riley')?.transferNeeded || 0) === 40, JSON.stringify(rileyPlan));
+
+const rileyDisabledPlan = calculateTransferPlan({
+  splitSummary: splitSummaryForPlan,
+  expenseBudget: { totalExpenseBudget: 400 },
+  wantsActuals: {
+    targets: [
+      { targetId: 'josh', actualSpent: 20, directSpent: 20, splitShare: 0 },
+      { targetId: 'taylor', actualSpent: 50, directSpent: 50, splitShare: 0 },
+      { targetId: 'riley', actualSpent: 10, directSpent: 10, splitShare: 0 },
+    ],
+  },
+  transferTargets: transferTargetsWithRiley.map((target) => target.id === 'riley' ? { ...target, active: false } : target),
+});
+assert('Disabling Riley returns Josh transfer to 55', rileyDisabledPlan.joshTransfer === 55, JSON.stringify(rileyDisabledPlan));
+assert('Disabling Riley returns Taylor transfer to 25', rileyDisabledPlan.taylorTransfer === 25, JSON.stringify(rileyDisabledPlan));
+assert('Disabled Riley is removed from Wants target rows', !rileyDisabledPlan.targetRows.some((row) => row.id === 'riley'), JSON.stringify(rileyDisabledPlan.targetRows));
 
 // ── Summary ───────────────────────────────────────────────────────────────
 console.log('\n' + '─'.repeat(50));

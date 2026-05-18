@@ -13,8 +13,15 @@ import {
   updateTransferConfirmation,
   deleteTransferConfirmation,
 } from '../api/transferConfirmationApi.js';
+import {
+  getSnowballTransfers,
+  createSnowballTransfer,
+  updateSnowballTransfer,
+  deleteSnowballTransfer,
+} from '../api/snowballTransferApi.js';
 import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
 import { getTransactionRowsForPeriod } from '../api/transactionsApi.js';
+import { getTransferTargetsConfig } from '../utils/transferTargets.js';
 
 const BACKEND = '';
 const DEFAULT_BUDGET_SPLIT = { Needs: 60, Wants: 20, 'Debts/Savings': 20 };
@@ -64,22 +71,22 @@ async function fetchBillStatus(periodId) {
 }
 
 function getTransferStatus(kind, row) {
-  if (kind === 'josh' || kind === 'taylor') {
+  if (row?.budgetGroup === 'Wants') {
     if (row.overused > 0) return 'Overused';
     if (row.transferNeeded > 0) return 'Transfer needed';
     return 'Covered';
   }
-  if (kind === 'discover') {
+  if (row?.budgetGroup === 'Expense Funding') {
     if (row.shortfall > 0) return 'Shortfall';
     if (row.transferNeeded > 0) return 'Funded';
     return 'No transfer needed';
   }
-  if (kind === 'debt-savings') {
+  if (row?.budgetGroup === 'Debt/Savings') {
     if (row.redirected > 0) return 'Partially redirected';
     if (row.transferNeeded > 0) return 'Transfer needed';
     return 'No transfer needed';
   }
-  if (row.transferNeeded > 0) return 'Reserve required';
+  if (row.transferNeeded > 0) return 'Transfer needed';
   return 'No reserve needed';
 }
 
@@ -93,6 +100,12 @@ function renderFormulaLines(lines) {
   return lines
     .map((line) => '<div class="formula-line"><span>' + escapeHtml(line.label) + '</span><strong>' + escapeHtml(line.value) + '</strong></div>')
     .join('');
+}
+
+function formatAllocationMethodLabel(value) {
+  const key = String(value || '').trim();
+  if (!key) return 'Unassigned';
+  return key.split('_').map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
 }
 
 function renderTargetRows(rows, confirmations, options = {}) {
@@ -132,6 +145,8 @@ function renderTargetRows(rows, confirmations, options = {}) {
       return (
         '<tr>' +
         '<td>' + escapeHtml(row.target) + '</td>' +
+        '<td>' + escapeHtml(row.budgetGroup || '') + '</td>' +
+        '<td>' + escapeHtml(formatAllocationMethodLabel(row.allocationMethod)) + '</td>' +
         '<td>' + escapeHtml(formatCurrencyValue(row.plannedAmount)) + '</td>' +
         '<td>' + escapeHtml(formatCurrencyValue(displayAlreadyUsed)) + '</td>' +
         '<td>' + escapeHtml(formatCurrencyValue(displayTransferAmount)) + '</td>' +
@@ -147,6 +162,19 @@ function renderTargetRows(rows, confirmations, options = {}) {
       );
     })
     .join('');
+}
+
+function renderWantsTargetCards(targets = []) {
+  if (!targets.length) return '<p class="empty-state">No active Wants targets configured.</p>';
+  return '<div class="transfer-summary-grid wants-summary-grid">' +
+    targets.map((target) => (
+      '<article class="card">' +
+      '<p>' + escapeHtml(target.name) + '</p>' +
+      '<h3>' + escapeHtml(formatCurrencyValue(target.actualSpent || 0)) + '</h3>' +
+      '<p class="muted-note">Direct ' + escapeHtml(formatCurrencyValue(target.directSpent || 0)) + ' | Shared ' + escapeHtml(formatCurrencyValue(target.splitShare || 0)) + '</p>' +
+      '</article>'
+    )).join('') +
+  '</div>';
 }
 
 function renderWantsTable(rows) {
@@ -212,6 +240,7 @@ export async function renderTransfers(container, period, periodLabel) {
   let autoDetectedIncomeByPeriod = {};
   let splitSettingValue = {};
   let safeMoneySettings = {};
+  let transferTargetsSetting = {};
 
   try {
     const budgetContext = await loadBudgetContext({ period });
@@ -224,6 +253,7 @@ export async function renderTransfers(container, period, periodLabel) {
     autoDetectedIncomeByPeriod = budgetContext?.settings?.autoDetectedIncomeByPeriod || budgetContext?.settings?.auto_detected_income_by_period || {};
     splitSettingValue = budgetContext?.settings?.splitSettings || {};
     safeMoneySettings = budgetContext?.settings?.safeMoneySettings || {};
+    transferTargetsSetting = budgetContext?.settings?.transferTargets || budgetContext?.settings?.transfer_targets || {};
   } catch (err) {
     console.error('Transfers: failed loading budget context:', err);
     backendDown = String(err.message || '').includes('Failed to fetch');
@@ -246,6 +276,7 @@ export async function renderTransfers(container, period, periodLabel) {
       autoDetectedIncomeByPeriod,
       splitSettings,
       safeMoneySettings,
+      transferTargets: transferTargetsSetting,
     },
   });
   const safeMoney = sharedSummary.safeMoney || {
@@ -260,9 +291,10 @@ export async function renderTransfers(container, period, periodLabel) {
 
   const wantsActuals = {
     wantsRows: sharedSummary.wants.transactions,
+    splitTotal: Number(sharedSummary.wants.splitSpent || 0),
+    targets: Array.isArray(sharedSummary.wants.targets) ? sharedSummary.wants.targets : [],
     joshDirect: Number(sharedSummary.wants.joshDirect || 0),
     taylorDirect: Number(sharedSummary.wants.taylorDirect || 0),
-    splitTotal: Number(sharedSummary.wants.splitSpent || 0),
     joshSplitShare: Number(sharedSummary.wants.joshSplitShare || 0),
     taylorSplitShare: Number(sharedSummary.wants.taylorSplitShare || 0),
     joshActual: Number(sharedSummary.wants.joshSpent || 0),
@@ -274,6 +306,8 @@ export async function renderTransfers(container, period, periodLabel) {
     splitSummary,
     expenseBudget: { totalExpenseBudget: sharedSummary.expenses.budgetTotal },
     wantsActuals,
+    transferTargets: transferTargetsSetting,
+    budgetIncome: sharedSummary.income.budgetIncome,
   });
 
   const alerts = [];
@@ -321,12 +355,47 @@ export async function renderTransfers(container, period, periodLabel) {
   }
 
   let transferConfirmations = [];
+  let debtSavingsFundingRecords = [];
   try {
     const confData = await getTransferConfirmations(period.id);
     transferConfirmations = Array.isArray(confData?.confirmations) ? confData.confirmations : [];
   } catch (err) {
     console.error('Transfers: failed loading transfer confirmations:', err);
   }
+
+  try {
+    const fundingData = await getSnowballTransfers(period.id);
+    debtSavingsFundingRecords = Array.isArray(fundingData?.transfers) ? fundingData.transfers : [];
+  } catch (err) {
+    console.error('Transfers: failed loading debt/savings funding records:', err);
+  }
+
+  const transferTargets = getTransferTargetsConfig(transferTargetsSetting);
+  const transferTargetById = new Map(transferTargets.map((target) => [target.id, target]));
+  const applyTargetMeta = (targetId, row) => {
+    const target = transferTargetById.get(targetId) || null;
+    return {
+      id: target?.id || targetId,
+      name: target?.name || row.target || targetId,
+      target: target?.name || row.target || targetId,
+      active: target?.active !== false,
+      budgetGroup: target?.budgetGroup || '',
+      targetKind: target?.targetKind || '',
+      allocationMethod: target?.allocationMethod || '',
+      connectedModule: target?.connectedModule || 'none',
+      confirmAction: target?.confirmAction || 'create_transfer_confirmation',
+      priority: target?.priority || 0,
+      notes: target?.notes || '',
+      ...row,
+    };
+  };
+  const shouldShowTarget = (target) => {
+    if (!target) return false;
+    if (target.budgetGroup === 'Wants') return trFeat('showJoshTaylorSplit');
+    if (target.budgetGroup === 'Expense Funding') return trFeat('showDiscoverTransferPlan');
+    if (target.budgetGroup === 'Debt/Savings') return trFeat('showDebtSavingsTransferPlan');
+    return true;
+  };
 
   const ccSettings = await loadCommandCenterSettings().catch(() => null);
   const trFeat = (key) => isFeatureEnabled(ccSettings, 'transfers', key);
@@ -335,86 +404,33 @@ export async function renderTransfers(container, period, periodLabel) {
     ? '<div class="closeout-warning">This period is closed. Reopen it before changing closeout-related data.</div>'
     : '';
 
-  const joshRow = {
-    id: 'josh',
-    target: 'Josh',
-    formulaSource: 'Wants remaining ÷ 2 - Josh wants already used',
-    plannedAmount: transferPlan.joshBaseShare,
-    alreadyUsed: wantsActuals.joshActual,
-    transferNeeded: transferPlan.joshTransfer,
-    overused: transferPlan.joshOverused,
-    status: '',
-    detailLines: [
-      { label: 'Wants Remaining', value: formatCurrencyValue(transferPlan.wantsRemaining) },
-      { label: 'Josh base share', value: formatCurrencyValue(transferPlan.joshBaseShare) },
-      { label: 'Josh direct wants spent', value: formatCurrencyValue(wantsActuals.joshDirect) },
-      { label: 'Josh share of Split', value: formatCurrencyValue(wantsActuals.joshSplitShare) },
-      { label: 'Josh transfer needed', value: formatCurrencyValue(transferPlan.joshTransfer) },
-      { label: 'Josh overused', value: formatCurrencyValue(transferPlan.joshOverused) },
-    ],
-  };
-
-  const taylorRow = {
-    id: 'taylor',
-    target: 'Taylor',
-    formulaSource: 'Wants remaining ÷ 2 - Taylor wants already used',
-    plannedAmount: transferPlan.taylorBaseShare,
-    alreadyUsed: wantsActuals.taylorActual,
-    transferNeeded: transferPlan.taylorTransfer,
-    overused: transferPlan.taylorOverused,
-    status: '',
-    detailLines: [
-      { label: 'Wants Remaining', value: formatCurrencyValue(transferPlan.wantsRemaining) },
-      { label: 'Taylor base share', value: formatCurrencyValue(transferPlan.taylorBaseShare) },
-      { label: 'Taylor direct wants spent', value: formatCurrencyValue(wantsActuals.taylorDirect) },
-      { label: 'Taylor share of Split', value: formatCurrencyValue(wantsActuals.taylorSplitShare) },
-      { label: 'Taylor transfer needed', value: formatCurrencyValue(transferPlan.taylorTransfer) },
-      { label: 'Taylor overused', value: formatCurrencyValue(transferPlan.taylorOverused) },
-    ],
-  };
-
-  const discoverFundingUsed = transferPlan.needsToDiscover + transferPlan.debtSavingsRedirect;
-  const discoverRow = {
-    id: 'discover',
-    target: 'Discover',
-    formulaSource: 'Expense Budget funded by Needs remaining + redirected Debts/Savings',
-    plannedAmount: transferPlan.discoverTarget,
-    alreadyUsed: discoverFundingUsed,
-    transferNeeded: transferPlan.discoverTransfer,
-    shortfall: transferPlan.discoverShortfall,
-    status: '',
-    detailLines: [
-      { label: 'Expense Budget', value: formatCurrencyValue(transferPlan.discoverTarget) },
-      { label: 'Needs Remaining used', value: formatCurrencyValue(transferPlan.needsToDiscover) },
-      { label: 'Debts/Savings redirected', value: formatCurrencyValue(transferPlan.debtSavingsRedirect) },
-      { label: 'Discover shortfall', value: formatCurrencyValue(transferPlan.discoverShortfall) },
-      { label: 'Discover transfer', value: formatCurrencyValue(transferPlan.discoverTransfer) },
-    ],
-  };
-
-  const debtSavingsRow = {
-    id: 'debt-savings',
-    target: 'Debt/Savings',
-    formulaSource: 'Debts/Savings remaining after Discover redirect',
-    plannedAmount: Math.max(0, transferPlan.debtSavingsRemaining),
-    alreadyUsed: transferPlan.debtSavingsRedirect,
-    transferNeeded: transferPlan.debtSavingsTransfer,
-    redirected: transferPlan.debtSavingsRedirect,
-    status: '',
-    detailLines: [
-      { label: 'Debts/Savings Remaining', value: formatCurrencyValue(transferPlan.debtSavingsRemaining) },
-      { label: 'Debts/Savings redirected to Discover', value: formatCurrencyValue(transferPlan.debtSavingsRedirect) },
-      { label: 'Debt/Savings transfer', value: formatCurrencyValue(transferPlan.debtSavingsTransfer) },
-      { label: 'Note', value: 'Debt/Savings transfer excludes bills paid directly from Bank of America.' },
-    ],
-  };
-
-  const rowsToShow = [
-    trFeat('showJoshTaylorSplit') ? joshRow : null,
-    trFeat('showJoshTaylorSplit') ? taylorRow : null,
-    trFeat('showDiscoverTransferPlan') ? discoverRow : null,
-    trFeat('showDebtSavingsTransferPlan') ? debtSavingsRow : null,
-  ].filter(Boolean).map((row) => ({ ...row, status: getTransferStatus(row.id, row) }));
+  const rowsToShow = (transferPlan.targetRows || [])
+    .map((row) => applyTargetMeta(row.id, {
+      ...row,
+      formulaSource: row.budgetGroup === 'Wants'
+        ? 'Configured Wants target allocation minus already used spending'
+        : row.budgetGroup === 'Expense Funding'
+          ? 'Expense funding target allocation from Needs and redirected Debt/Savings'
+          : row.budgetGroup === 'Debt/Savings'
+            ? 'Debt/Savings remaining after Expense Funding redirect'
+            : 'Configured transfer target allocation',
+      redirected: row.id === 'debt-savings' ? transferPlan.debtSavingsRedirect : 0,
+      shortfall: row.id === 'discover' ? transferPlan.discoverShortfall : 0,
+      alreadyUsed: row.id === 'discover'
+        ? transferPlan.needsToDiscover + transferPlan.debtSavingsRedirect
+        : row.id === 'debt-savings'
+          ? transferPlan.debtSavingsRedirect
+          : row.alreadyUsed,
+      detailLines: [
+        { label: 'Budget Group', value: row.budgetGroup || '' },
+        { label: 'Allocation Method', value: formatAllocationMethodLabel(row.allocationMethod) },
+        { label: 'Planned Transfer', value: formatCurrencyValue(row.plannedAmount || 0) },
+        { label: 'Already Used', value: formatCurrencyValue(row.alreadyUsed || 0) },
+        { label: 'New Planned Transfer', value: formatCurrencyValue(row.transferNeeded || 0) },
+      ],
+    }))
+    .filter((row) => shouldShowTarget(row))
+    .map((row) => ({ ...row, status: getTransferStatus(row.id, row) }));
 
   const rows = rowsToShow;
   const showTransferMatching = trFeat('showTransferMatching');
@@ -424,10 +440,7 @@ export async function renderTransfers(container, period, periodLabel) {
 
     '<section class="transfer-summary-grid">' +
     '<article class="card"><p>Total Planned Transfers</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.totalPlannedTransfers)) + '</h3></article>' +
-    (trFeat('showJoshTaylorSplit') ? '<article class="card"><p>Josh Transfer</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.joshTransfer)) + '</h3></article>' : '') +
-    (trFeat('showJoshTaylorSplit') ? '<article class="card"><p>Taylor Transfer</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.taylorTransfer)) + '</h3></article>' : '') +
-    (trFeat('showDiscoverTransferPlan') ? '<article class="card"><p>Discover Transfer</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.discoverTransfer)) + '</h3></article>' : '') +
-    (trFeat('showDebtSavingsTransferPlan') ? '<article class="card"><p>Debt/Savings Transfer</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.debtSavingsTransfer)) + '</h3></article>' : '') +
+    rows.map((row) => '<article class="card"><p>' + escapeHtml(row.target) + '</p><h3>' + escapeHtml(formatCurrencyValue(row.transferNeeded || 0)) + '</h3><p class="muted-note">' + escapeHtml(row.budgetGroup || '') + '</p></article>').join('') +
     '</section>' +
     '<section class="card planner-safe-money-card">' +
     '<div class="card-header"><h3 class="card-title">Safe to Transfer</h3><p class="card-description">Shared safe transfer amount from the summary engine.</p></div>' +
@@ -447,23 +460,16 @@ export async function renderTransfers(container, period, periodLabel) {
       : '') +
     '<section class="card">' +
     '<div class="table-wrap"><table class="table transfer-table">' +
-    '<thead><tr><th>Target</th><th>Planned Transfer</th><th>Already Used</th><th>New Planned Transfer</th><th>Status</th>' + (showTransferMatching ? '<th>Action</th>' : '') + (showAdvancedTransferMath ? '<th>Details</th>' : '') + '</tr></thead>' +
+    '<thead><tr><th>Target</th><th>Budget Group</th><th>Allocation Method</th><th>Planned Transfer</th><th>Already Used</th><th>New Planned Transfer</th><th>Status</th>' + (showTransferMatching ? '<th>Action</th>' : '') + (showAdvancedTransferMath ? '<th>Details</th>' : '') + '</tr></thead>' +
     '<tbody>' + renderTargetRows(rows, transferConfirmations, { showTransferMatching, showAdvancedTransferMath }) + '</tbody>' +
     '</table></div>' +
     '<p class="muted-note">Debt/Savings transfer excludes bills paid directly from Bank of America.</p>' +
     '</section>' +
     (trFeat('showJoshTaylorSplit') ?
       '<section class="card wants-activity-card">' +
-      '<div class="card-header"><h3 class="card-title">Wants Activity</h3><p class="card-description">Transactions already counted against Josh/Taylor wants.</p></div>' +
-      '<div class="transfer-summary-grid wants-summary-grid">' +
-      '<article class="card"><p>Josh direct wants spent</p><h3>' + escapeHtml(formatCurrencyValue(wantsActuals.joshDirect)) + '</h3></article>' +
-      '<article class="card"><p>Taylor direct wants spent</p><h3>' + escapeHtml(formatCurrencyValue(wantsActuals.taylorDirect)) + '</h3></article>' +
+      '<div class="card-header"><h3 class="card-title">Wants Activity</h3><p class="card-description">Transactions already counted against active Wants targets.</p></div>' +
       '<article class="card"><p>Split wants spent</p><h3>' + escapeHtml(formatCurrencyValue(wantsActuals.splitTotal)) + '</h3></article>' +
-      '<article class="card"><p>Josh share of Split</p><h3>' + escapeHtml(formatCurrencyValue(wantsActuals.joshSplitShare)) + '</h3></article>' +
-      '<article class="card"><p>Taylor share of Split</p><h3>' + escapeHtml(formatCurrencyValue(wantsActuals.taylorSplitShare)) + '</h3></article>' +
-      '<article class="card"><p>Josh overused amount</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.joshOverused)) + '</h3></article>' +
-      '<article class="card"><p>Taylor overused amount</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.taylorOverused)) + '</h3></article>' +
-      '</div>' +
+      renderWantsTargetCards(wantsActuals.targets || []) +
       renderWantsTable(wantsActuals.wantsRows) +
       '</section>'
       : '');
@@ -490,12 +496,7 @@ export async function renderTransfers(container, period, periodLabel) {
   });
 
   // Target name map
-  const targetNameMap = {
-    'josh': 'Josh',
-    'taylor': 'Taylor',
-    'discover': 'Discover',
-    'debt-savings': 'Debt/Savings',
-  };
+  const targetNameMap = Object.fromEntries(rows.map((row) => [row.id, row.target]));
 
   function backendErrMsg(err) {
     return String(err.message || '').includes('Failed to fetch')
@@ -519,6 +520,7 @@ export async function renderTransfers(container, period, periodLabel) {
       try {
         // Check if confirmation already exists
         const existing = transferConfirmations.find(c => c.targetName === targetNameMap[targetId]);
+        const existingFundingRecord = debtSavingsFundingRecords.find((row) => row.sourceTargetId === targetId || row.sourceTargetName === targetRow.target);
         
         if (existing) {
           // Update existing confirmation
@@ -541,6 +543,25 @@ export async function renderTransfers(container, period, periodLabel) {
             notes: 'Confirmed via Transfer page for period: ' + periodLabel,
           });
         }
+
+        if (targetRow.confirmAction === 'create_debt_savings_funding') {
+          const fundingPayload = {
+            budgetPeriodId: period.id,
+            startDate: period.startDate || '',
+            endDate: period.displayEndDate || period.exclusiveEndDate || '',
+            sourceTargetId: targetRow.id,
+            sourceTargetName: targetRow.target,
+            confirmedAmount,
+            status: 'transfer_confirmed',
+            notes: 'Confirmed from Transfers page for period: ' + periodLabel,
+          };
+          if (existingFundingRecord?.id) {
+            await updateSnowballTransfer(existingFundingRecord.id, fundingPayload);
+          } else {
+            await createSnowballTransfer(fundingPayload);
+          }
+        }
+
         await renderTransfers(container, period, periodLabel);
       } catch (err) {
         alert('Failed to confirm transfer: ' + backendErrMsg(err));
@@ -553,6 +574,8 @@ export async function renderTransfers(container, period, periodLabel) {
       const targetId = e.currentTarget.getAttribute('data-target');
       const targetName = targetNameMap[targetId];
       const existing = transferConfirmations.find(c => c.targetName === targetName);
+      const targetRow = rows.find((row) => row.id === targetId);
+      const existingFundingRecord = debtSavingsFundingRecords.find((row) => row.sourceTargetId === targetId || row.sourceTargetName === targetName);
 
       if (!existing) return;
 
@@ -560,6 +583,9 @@ export async function renderTransfers(container, period, periodLabel) {
 
       try {
         await deleteTransferConfirmation(existing.id);
+        if (targetRow?.confirmAction === 'create_debt_savings_funding' && existingFundingRecord?.id) {
+          await deleteSnowballTransfer(existingFundingRecord.id);
+        }
         await renderTransfers(container, period, periodLabel);
       } catch (err) {
         alert('Failed to reset transfer confirmation: ' + backendErrMsg(err));

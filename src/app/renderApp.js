@@ -351,4 +351,11 @@ function _attachGlobalListeners() {
       renderActivePage();
     }
   });
+
+  window.addEventListener('budget:transfer-targets-updated', () => {
+    const { activeTab } = getAppState();
+    if (['dashboard', 'cash-flow', 'paycheck-planner', 'transfers', 'closeout', 'reports', 'data-health', 'debt-snowball', 'history'].includes(activeTab)) {
+      renderActivePage();
+    }
+  });
 }

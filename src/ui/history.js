@@ -76,6 +76,7 @@ async function buildSnapshotSummary(period) {
     manualIncomeMap,
     autoIncomeMap,
     splitSettings,
+    transferTargets,
     plaidStatus,
   ] = await Promise.all([
     fetchJson('/api/master-lists'),
@@ -84,6 +85,7 @@ async function buildSnapshotSummary(period) {
     fetchSetting('budget_income_by_period'),
     fetchSetting('auto_detected_income_by_period'),
     fetchSetting('budget_split_settings'),
+    fetchSetting('transfer_targets'),
     fetchJson('/api/plaid/status').catch(() => ({ accounts: [] })),
   ]);
 
@@ -106,6 +108,7 @@ async function buildSnapshotSummary(period) {
       manualIncomeByPeriod: manualIncomeMap,
       autoDetectedIncomeByPeriod: autoIncomeMap,
       splitSettings,
+      transferTargets,
     },
   });
 

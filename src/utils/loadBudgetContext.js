@@ -31,7 +31,7 @@ function normalizeSettingMap(value) {
 }
 
 export async function loadBudgetContext({ period }) {
-  const [plaidStatus, transactions, masterLists, recurringBillStatuses, manualIncomeByPeriod, autoDetectedIncomeByPeriod, splitSettings, safeMoneySettings] = await Promise.all([
+  const [plaidStatus, transactions, masterLists, recurringBillStatuses, manualIncomeByPeriod, autoDetectedIncomeByPeriod, splitSettings, safeMoneySettings, transferTargets] = await Promise.all([
     fetchJson('/api/plaid/status'),
     getTransactionRowsForPeriod(period),
     fetchJson('/api/master-lists'),
@@ -40,6 +40,7 @@ export async function loadBudgetContext({ period }) {
     fetchSettingWithFallback('autoDetectedIncomeByPeriod', 'auto_detected_income_by_period', {}),
     fetchSettingWithFallback('splitSettings', 'budget_split_settings', {}),
     fetchSettingWithFallback('safeMoneySettings', 'safe_money_settings', {}),
+    fetchSetting('transfer_targets', {}),
   ]);
 
   const normalizedSafeMoneySettings = safeMoneySettings && typeof safeMoneySettings === 'object' ? safeMoneySettings : {};
@@ -60,6 +61,8 @@ export async function loadBudgetContext({ period }) {
       manualIncomeByPeriod: normalizeSettingMap(manualIncomeByPeriod),
       autoDetectedIncomeByPeriod: normalizeSettingMap(autoDetectedIncomeByPeriod),
       splitSettings: normalizeSettingMap(splitSettings),
+      transferTargets: transferTargets && typeof transferTargets === 'object' ? transferTargets : {},
+      transfer_targets: transferTargets && typeof transferTargets === 'object' ? transferTargets : {},
       includePendingTransactions: includePendingTransactions === true,
       includePending: includePendingTransactions === true,
       safeMoneySettings: normalizeSettingMap(normalizedSafeMoneySettings),

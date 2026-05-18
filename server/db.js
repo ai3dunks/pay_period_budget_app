@@ -38,6 +38,16 @@ function ensureDebtSnowballColumn(columnName, columnSql) {
 
 ensureDebtSnowballColumn('credit_limit', 'credit_limit REAL');
 
+function ensureDebtSavingsTransferColumn(columnName, columnSql) {
+  const columns = db.prepare("PRAGMA table_info('debt_savings_transfer_confirmations')").all();
+  if (!columns.some((col) => col.name === columnName)) {
+    db.exec('ALTER TABLE debt_savings_transfer_confirmations ADD COLUMN ' + columnSql);
+  }
+}
+
+ensureDebtSavingsTransferColumn('source_target_id', 'source_target_id TEXT DEFAULT ""');
+ensureDebtSavingsTransferColumn('source_target_name', 'source_target_name TEXT DEFAULT ""');
+
 function tableExists(tableName) {
   const row = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
@@ -127,6 +137,10 @@ function ensureIndexes() {
   ensureIndex(
     'idx_budget_buckets_group',
     'CREATE INDEX IF NOT EXISTS idx_budget_buckets_group ON budget_buckets(budget_group)'
+  );
+  ensureIndex(
+    'idx_debt_savings_transfer_period_target',
+    'CREATE INDEX IF NOT EXISTS idx_debt_savings_transfer_period_target ON debt_savings_transfer_confirmations(budget_period_id, source_target_id)'
   );
 
   if (tableExists('transfer_checklist_items')) {

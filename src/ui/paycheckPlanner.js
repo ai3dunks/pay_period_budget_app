@@ -298,6 +298,7 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
       autoIncomeMap,
       splitSettingsRaw,
       safeMoneySettings,
+      transferTargetsSetting,
       bucketsPayload,
       ccSettings,
     ] = await Promise.all([
@@ -308,6 +309,7 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
       fetchSetting('auto_detected_income_by_period'),
       fetchSetting('budget_split_settings'),
       fetchSetting('safe_money_settings'),
+      fetchSetting('transfer_targets'),
       fetchBudgetBucketsForPeriod(period).catch(() => ({ rows: [], groupTotals: {}, unassignedSpending: { count: 0, total: 0, transactions: [] } })),
       loadCommandCenterSettings().catch(() => null),
     ]);
@@ -340,6 +342,7 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
         autoDetectedIncomeByPeriod: effectiveAutoIncomeMap,
         splitSettings: splitSettingsRaw,
         safeMoneySettings,
+        transferTargets: transferTargetsSetting,
       },
     });
     const safeMoney = summary.safeMoney || {

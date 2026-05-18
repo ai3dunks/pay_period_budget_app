@@ -7,8 +7,8 @@ import {
   confirmDebtSnowballPaymentPlan,
 } from '../api/debtSnowballApi.js';
 import {
-  getTransferConfirmations,
-} from '../api/transferConfirmationApi.js';
+  getSnowballTransfers,
+} from '../api/snowballTransferApi.js';
 import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
 
 function escapeHtml(value) {
@@ -469,7 +469,7 @@ function buildSuggestedDebtPayments({ debts = [], strategy = 'snowball', confirm
   return rows;
 }
 
-function renderAvailableExtraPaymentShell({ strategy, periodLabel, confirmedTransferAmount, hasConfirmedTransfer, suggestedRows }) {
+function renderAvailableExtraPaymentShell({ strategy, periodLabel, sourceLabel, confirmedTransferAmount, hasConfirmedTransfer, suggestedRows }) {
   const hasAmount = hasConfirmedTransfer && confirmedTransferAmount > 0.00001;
   const confirmedAmountDisplay = hasConfirmedTransfer
     ? formatCurrency(confirmedTransferAmount)
@@ -482,11 +482,12 @@ function renderAvailableExtraPaymentShell({ strategy, periodLabel, confirmedTran
   return (
     '<section class="card debt-extra-shell-card"><div class="card-header"><h3 class="card-title">Available Extra Debt Payment</h3></div>' +
     '<div class="debt-extra-shell-list">' +
-    '<div class="action-row"><span>Source</span><strong>Debt/Savings Transfer</strong></div>' +
+    '<div class="action-row"><span>Source</span><strong>' + escapeHtml(sourceLabel || 'Debt/Savings') + '</strong></div>' +
     '<div class="action-row"><span>Budget Period</span><strong>' + escapeHtml(periodLabel || 'Not available') + '</strong></div>' +
     '<div class="action-row"><span>Confirmed Transferred Amount</span><strong>' + escapeHtml(confirmedAmountDisplay) + '</strong></div>' +
+    '<div class="action-row"><span>Strategy</span><strong>' + escapeHtml(String(strategy || 'snowball').replace(/^./, (value) => value.toUpperCase())) + '</strong></div>' +
     '</div>' +
-    '<div class="debt-extra-shell-subtitle">Suggested Debt Payments</div>' +
+    '<div class="debt-extra-shell-subtitle">Suggested Debt/Savings Allocation</div>' +
     (hasAmount ? tableHtml : '<div class="debt-extra-shell-empty">No confirmed extra debt payment available for this budget period.</div>') +
     '</section>'
   );
@@ -555,12 +556,12 @@ export async function renderDebtSnowball(container, period, periodLabel, periods
     const ccSettings = await loadCommandCenterSettings().catch(() => null);
     const dsFeat = (key) => isFeatureEnabled(ccSettings, 'debtSnowball', key);
 
-    let transferConfirmations = [];
+    let debtSavingsFundingRecords = [];
     try {
-      const confData = await getTransferConfirmations(period.id, 'Debt/Savings');
-      transferConfirmations = Array.isArray(confData?.confirmations) ? confData.confirmations : [];
+      const fundingData = await getSnowballTransfers(period.id);
+      debtSavingsFundingRecords = Array.isArray(fundingData?.transfers) ? fundingData.transfers : [];
     } catch (err) {
-      console.error('Debt Snowball: failed loading transfer confirmations:', err);
+      console.error('Debt Snowball: failed loading debt savings funding records:', err);
     }
 
     const config = data?.config || {};
@@ -577,8 +578,12 @@ export async function renderDebtSnowball(container, period, periodLabel, periods
       console.error('Debt Snowball: failed loading payment plans:', err);
     }
 
-    const confirmedDebtSavingsTransfer = transferConfirmations.find((c) => c.targetName === 'Debt/Savings' && c.status === 'confirmed');
-    const confirmedTransferAmount = roundMoney(confirmedDebtSavingsTransfer?.confirmedTransferAmount || 0);
+    const confirmedDebtSavingsTransfer = debtSavingsFundingRecords.find((row) => {
+      const status = String(row?.status || '').trim().toLowerCase();
+      if (status === 'cancelled' || status === 'not_needed') return false;
+      return row?.sourceTargetId === 'debt-savings' || row?.sourceTargetName === 'Debt/Savings';
+    }) || null;
+    const confirmedTransferAmount = roundMoney((confirmedDebtSavingsTransfer?.confirmedAmount ?? confirmedDebtSavingsTransfer?.amount) || 0);
     const appliedTransferAmount = roundMoney(
       paymentPlans
         .filter((planRow) => planRow.status === 'applied')
@@ -622,6 +627,7 @@ export async function renderDebtSnowball(container, period, periodLabel, periods
       (dsFeat('showAvailableExtraDebtPayment') ? renderAvailableExtraPaymentShell({
         strategy: plan.strategy,
         periodLabel,
+        sourceLabel: confirmedDebtSavingsTransfer?.sourceTargetName || 'Debt/Savings',
         confirmedTransferAmount,
         hasConfirmedTransfer: Boolean(confirmedDebtSavingsTransfer),
         suggestedRows: suggestedDebtPayments,
