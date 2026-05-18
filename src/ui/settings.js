@@ -898,8 +898,8 @@ function _renderTransferTargetsSection(targets, editingTarget) {
     '<div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>ID</th><th>Budget Group</th><th>Allocation Method</th><th>Destination Account</th><th>Status</th><th>Actions</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>' +
     '<div class="card-header" style="margin-top:1rem;"><h4 class="card-title">' + escapeHtml(editingTarget.id ? 'Edit Transfer Target' : 'Add Transfer Target') + '</h4></div>' +
     '<div class="form-grid" data-transfer-target-form="1">' +
-    '<label class="form-field"><span>ID</span><input id="transfer-target-id" value="' + escapeHtml(editingTarget.id || '') + '" placeholder="riley"></label>' +
-    '<label class="form-field"><span>Name</span><input id="transfer-target-name" value="' + escapeHtml(editingTarget.name || '') + '" placeholder="Riley"></label>' +
+    '<label class="form-field"><span>ID</span><input id="transfer-target-id" value="' + escapeHtml(editingTarget.id || '') + '"></label>' +
+    '<label class="form-field"><span>Name</span><input id="transfer-target-name" value="' + escapeHtml(editingTarget.name || '') + '"></label>' +
     '<label class="form-field checkbox-field"><span><input id="transfer-target-active" type="checkbox"' + (editingTarget.active ? ' checked' : '') + '> Active</span></label>' +
     '<label class="form-field"><span>Target Kind</span><select id="transfer-target-kind">' + _renderTransferTargetOptionList(TRANSFER_TARGET_KIND_OPTIONS, editingTarget.targetKind) + '</select></label>' +
     '<label class="form-field"><span>Budget Group</span><select id="transfer-target-budget-group">' + _renderTransferTargetOptionList(TRANSFER_BUDGET_GROUP_OPTIONS, editingTarget.budgetGroup) + '</select></label>' +
