@@ -45,13 +45,29 @@ function normalizeSplitInput(splitSettings = {}) {
  */
 export function calculateBudgetSplit({ budgetIncome, recurringBillsDue = [], splitSettings = {} }) {
   const income = toNumber(budgetIncome, 0);
+  const percents = normalizeSplitInput(splitSettings);
+  const percentTotal =
+    toNumber(percents.Needs, 0) +
+    toNumber(percents.Wants, 0) +
+    toNumber(percents['Debts/Savings'], 0);
+
+  const actualByGroup = {
+    Needs: 0,
+    Wants: 0,
+    'Debts/Savings': 0,
+  };
+
+  for (const bill of recurringBillsDue || []) {
+    if (!bill) continue;
+    const group = normalizeGroupName(bill.budget_group ?? bill.category);
+    if (!group) continue;
+    actualByGroup[group] += Math.abs(toNumber(bill.amount, 0));
+  }
+
   const rows = BUDGET_CATEGORIES.map((category) => {
-    const percent = splitSettings[category] ?? DEFAULT_BUDGET_SPLIT[category] ?? 0;
+    const percent = toNumber(percents[category], 0);
     const allotted = (income * percent) / 100;
-    const actual = (recurringBillsDue || []).reduce((sum, bill) => {
-      if (String(bill.category || '').trim() !== category) return sum;
-      return sum + toNumber(bill.amount, 0);
-    }, 0);
+    const actual = actualByGroup[category] || 0;
     return {
       category,
       percent,
@@ -60,15 +76,21 @@ export function calculateBudgetSplit({ budgetIncome, recurringBillsDue = [], spl
       remaining: allotted - actual,
     };
   });
+
+  const totalActual = rows.reduce((sum, row) => sum + toNumber(row.actual, 0), 0);
+  const isValid = Math.abs(percentTotal - 100) < 0.0001;
+
   return {
     rows,
     total: {
-      percent: 100,
+      percent: percentTotal,
       allotted: income,
-      actual: (recurringBillsDue || []).reduce((sum, bill) => sum + toNumber(bill.amount, 0), 0),
-      remaining:
-        income -
-        (recurringBillsDue || []).reduce((sum, bill) => sum + toNumber(bill.amount, 0), 0),
+      actual: totalActual,
+      remaining: income - totalActual,
+    },
+    validation: {
+      percentTotal,
+      isValid,
     },
   };
 }

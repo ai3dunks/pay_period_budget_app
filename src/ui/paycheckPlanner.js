@@ -315,7 +315,11 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
 
     const expenseList = masterLists.expenseList || [];
     const recurringBillsList = masterLists.recurringBillsList || [];
-    const detectedPayroll = getDetectedPayrollIncome(transactions, period);
+    const includePendingTransactions =
+      safeMoneySettings?.includePendingTransactions === true || safeMoneySettings?.include_pending_transactions === true;
+    const detectedPayroll = getDetectedPayrollIncome(transactions, period, {
+      includePendingTransactions,
+    });
     const effectiveAutoIncomeMap = {
       ...autoIncomeMap,
     };
@@ -340,7 +344,7 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
     });
     const safeMoney = summary.safeMoney || {
       safetyBuffer: 0,
-      includePendingTransactions: false,
+      includePendingTransactions,
       pendingNote: 'Pending transactions excluded.',
       safeToSpend: { amount: summary.safeToSpend, status: 'warning', blockers: [], warnings: [], breakdown: {} },
       safeToTransfer: { amount: summary.safeToTransfer, status: 'warning', blockers: [], warnings: [], breakdown: {} },
@@ -740,7 +744,13 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
         button.disabled = true;
         button.textContent = 'Detecting...';
         const result = await fetchAutoDetectSummary(period);
-        if (result.payroll?.detected) {
+        const payrollRows = Array.isArray(result.payroll?.transactions) ? result.payroll.transactions : [];
+        const hasNonPendingPayroll = payrollRows.some((row) => !row?.pending);
+        const detectedPayrollAllowed =
+          !!result.payroll?.detected &&
+          (includePendingTransactions || payrollRows.length === 0 || hasNonPendingPayroll);
+
+        if (detectedPayrollAllowed) {
           await saveAutoDetectedIncome(period.id, result.payroll.amount);
           if (!hasManualIncome) {
             await clearBudgetIncome(period.id);
@@ -751,6 +761,9 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
             messageEl.className = 'settings-message success';
             messageEl.textContent = 'Auto-detect complete: ' + result.bills.matched + ' auto-paid, ' + result.bills.possible + ' possible matches.';
           }
+        } else if (result.payroll?.detected && !includePendingTransactions && messageEl) {
+          messageEl.className = 'settings-message error';
+          messageEl.textContent = 'Pending payroll was detected but pending transactions are excluded in Safe Money settings.';
         } else if (messageEl) {
           messageEl.className = 'settings-message error';
           messageEl.textContent = 'No Cisco payroll found for this budget period.';

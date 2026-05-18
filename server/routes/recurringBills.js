@@ -1,83 +1,14 @@
 import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import db from '../db.js';
+import { getDetectedPayrollIncome, isCiscoPayrollTransaction } from '../../shared/payrollDetection.js';
+import { getBillDueDateForPeriod, scoreRecurringBillPaymentMatch } from '../../shared/recurringBills.js';
+import { normalizeText, parseMatchWords, parseJsonSafe } from '../../shared/text.js';
 
 const router = Router();
 
-const CISCO_PAYROLL_PATTERNS = ['CISCO SYSTEMS', 'DES:PAYROLL', 'CISCO PAYROLL'];
-
 function parseRawJson(rawJson) {
-  if (!rawJson) return null;
-  if (typeof rawJson === 'object') return rawJson;
-  if (typeof rawJson !== 'string') return null;
-  try {
-    return JSON.parse(rawJson);
-  } catch {
-    return null;
-  }
-}
-
-function collectPayrollSearchFields(tx) {
-  const raw = parseRawJson(tx?.raw_json);
-  return [
-    tx?.name,
-    tx?.description,
-    tx?.merchant_name,
-    tx?.raw_json,
-    raw?.original_description,
-    raw?.name,
-    raw?.merchant_name,
-  ];
-}
-
-function isCiscoPayrollTransaction(tx) {
-  const haystack = collectPayrollSearchFields(tx)
-    .map((value) => String(value || '').toUpperCase())
-    .filter(Boolean)
-    .join(' ');
-  return CISCO_PAYROLL_PATTERNS.some((pattern) => haystack.includes(pattern));
-}
-
-function normalizeText(text) {
-  return String(text || '')
-    .toUpperCase()
-    .replace(/[^A-Z0-9\s]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function parseMatchWords(value) {
-  if (!value) return [];
-  if (Array.isArray(value)) {
-    return parseMatchWords(value.join(','));
-  }
-  if (typeof value === 'object') {
-    return parseMatchWords(JSON.stringify(value));
-  }
-  const str = String(value).trim();
-  if (!str) return [];
-
-  let sourceWords = null;
-  if (str.startsWith('[') && str.endsWith(']')) {
-    try {
-      const parsed = JSON.parse(str);
-      if (Array.isArray(parsed)) sourceWords = parsed;
-    } catch {
-      sourceWords = null;
-    }
-  }
-
-  const seen = new Set();
-  const rawWords = sourceWords || str.split(',');
-  return rawWords
-    .map((w) => String(w || '').trim())
-    .filter((w) => {
-      if (!w) return false;
-      const key = w.toLowerCase();
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+  return parseJsonSafe(rawJson);
 }
 
 function buildTransactionSearchText(tx) {
@@ -93,61 +24,40 @@ function buildTransactionSearchText(tx) {
   ].filter(Boolean).join(' '));
 }
 
+function parseBillMatchWords(value) {
+  if (Array.isArray(value)) return parseMatchWords(value);
+  const parsed = parseRawJson(value);
+  if (Array.isArray(parsed)) return parseMatchWords(parsed);
+  return parseMatchWords(value);
+}
+
 function isIgnoredIncomeOrTransfer(tx) {
   const typeText = normalizeText(tx.type);
   const categoryText = normalizeText(tx.category);
   const searchText = buildTransactionSearchText(tx);
   if (tx.ignored) return true;
   if (Number(tx.amount || 0) >= 0) return true;
-  if (typeText.includes('INCOME')) return true;
-  if (typeText.includes('PAYCHECK')) return true;
-  if (typeText.includes('TRANSFER')) return true;
-  if (typeText.includes('DEPOSIT')) return true;
-  if (categoryText.includes('INCOME')) return true;
-  if (categoryText.includes('TRANSFER')) return true;
-  if (categoryText.includes('PAYCHECK')) return true;
-  if (searchText.includes('TRANSFER IN')) return true;
-  if (searchText.includes('XFER IN')) return true;
-  if (searchText.includes('DIRECT DEPOSIT')) return true;
+  if (typeText.includes('income')) return true;
+  if (typeText.includes('paycheck')) return true;
+  if (typeText.includes('transfer')) return true;
+  if (typeText.includes('deposit')) return true;
+  if (categoryText.includes('income')) return true;
+  if (categoryText.includes('transfer')) return true;
+  if (categoryText.includes('paycheck')) return true;
+  if (searchText.includes('transfer in')) return true;
+  if (searchText.includes('xfer in')) return true;
+  if (searchText.includes('direct deposit')) return true;
   return false;
 }
 
-function getPayrollTransactionsForPeriod(transactions = [], period) {
-  const periodStart = new Date(period.startDate);
-  const periodEnd = new Date(period.exclusiveEndDate);
-
-  return (transactions || []).filter((tx) => {
-    if (!tx || tx.ignored) return false;
-    if (Number(tx.amount || 0) <= 0) return false;
-    const txDate = new Date(tx.date);
-    if (txDate < periodStart || txDate >= periodEnd) return false;
-    return isCiscoPayrollTransaction(tx);
-  });
-}
-
-function getDetectedPayrollIncome(transactions = [], period) {
-  const payrollTransactions = getPayrollTransactionsForPeriod(transactions, period);
-  const amount = payrollTransactions.reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
-  return {
-    detected: payrollTransactions.length > 0,
-    amount,
-    count: payrollTransactions.length,
-    transactionIds: payrollTransactions.map((tx) => tx.id).filter(Boolean),
-    transactions: payrollTransactions,
-  };
-}
-
-function computeDueDateForPeriod(dueDay, periodStartDate) {
-  const date = new Date(periodStartDate);
-  date.setDate(Math.max(1, Math.min(31, Number(dueDay || 1))));
-  if (date < periodStartDate) {
-    date.setMonth(date.getMonth() + 1);
+function getSafeMoneyIncludePendingSetting() {
+  try {
+    const row = db.prepare('SELECT value_json FROM settings WHERE key = ?').get('safe_money_settings');
+    const parsed = parseJsonSafe(row?.value_json);
+    return parsed?.includePendingTransactions === true || parsed?.include_pending_transactions === true;
+  } catch {
+    return false;
   }
-  return date;
-}
-
-function dayDiffAbs(a, b) {
-  return Math.abs(Math.round((a - b) / (1000 * 60 * 60 * 24)));
 }
 
 function isTransactionCandidateForBill(tx, periodStart, periodEnd, dueDate) {
@@ -156,86 +66,6 @@ function isTransactionCandidateForBill(tx, periodStart, periodEnd, dueDate) {
   const afterDueLimit = new Date(dueDate);
   afterDueLimit.setDate(afterDueLimit.getDate() + 5);
   return txDate > dueDate && txDate <= afterDueLimit;
-}
-
-function scoreRecurringBillPaymentMatch(bill, transaction, dueDate, alreadyMatchedTransactionIds) {
-  if (alreadyMatchedTransactionIds.has(transaction.id)) return { score: -100, method: 'already_matched' };
-  if (transaction._isIgnoredIncomeOrTransfer ?? isIgnoredIncomeOrTransfer(transaction)) return { score: -100, method: 'ignored_or_income_or_transfer' };
-
-  const txSearchText = transaction._searchText || buildTransactionSearchText(transaction);
-  if (transaction._isCiscoPayroll ?? isCiscoPayrollTransaction(transaction)) return { score: -100, method: 'payroll' };
-
-  const billAmount = Math.abs(Number(bill.amount || 0));
-  const txAmount = Math.abs(Number(transaction.amount || 0));
-  const amountDelta = Math.abs(billAmount - txAmount);
-
-  let score = 0;
-  let amountClose = false;
-  let dateClose = false;
-  let foundMatchWord = false;
-  let foundNameKeyword = false;
-  const methods = [];
-
-  if (amountDelta < 0.01) {
-    score += 45;
-    amountClose = true;
-    methods.push('exact_amount');
-  } else if (amountDelta <= 1) {
-    score += 35;
-    amountClose = true;
-    methods.push('amount_within_1');
-  } else if (billAmount > 0 && amountDelta / billAmount <= 0.03) {
-    score += 25;
-    amountClose = true;
-    methods.push('amount_within_3pct');
-  }
-
-  const txDate = new Date(transaction.date);
-  const daysDiff = dayDiffAbs(txDate, dueDate);
-  if (daysDiff <= 3) {
-    score += 20;
-    dateClose = true;
-    methods.push('date_within_3_days');
-  } else if (daysDiff <= 5) {
-    score += 10;
-    dateClose = true;
-    methods.push('date_within_5_days');
-  }
-
-  const matchWords = parseMatchWords(bill.match_words ?? bill.matchWords);
-  if (matchWords.some((word) => txSearchText.includes(normalizeText(word)))) {
-    score += 35;
-    foundMatchWord = true;
-    methods.push('match_word');
-  }
-
-  const billNameTokens = normalizeText(bill.name)
-    .split(' ')
-    .filter((token) => token.length >= 4);
-  if (billNameTokens.some((token) => txSearchText.includes(token))) {
-    score += 20;
-    foundNameKeyword = true;
-    methods.push('bill_name_keyword');
-  }
-
-  if (bill.autopay && amountClose && dateClose) {
-    score += 10;
-    methods.push('autopay_amount_date_bonus');
-  }
-
-  if (bill.autopay && foundMatchWord) {
-    score += 10;
-    methods.push('autopay_match_word_bonus');
-  }
-
-  return {
-    score,
-    method: methods.join(','),
-    amountClose,
-    dateClose,
-    foundMatchWord,
-    foundNameKeyword,
-  };
 }
 
 function upsertStatus(values) {
@@ -282,6 +112,7 @@ function upsertStatus(values) {
 router.post('/auto-detect', (req, res) => {
   try {
     const { periodId, startDate, exclusiveEndDate } = req.body;
+    const includePendingTransactions = getSafeMoneyIncludePendingSetting();
 
     if (!periodId || !startDate || !exclusiveEndDate) {
       return res.status(400).json({
@@ -320,7 +151,9 @@ router.post('/auto-detect', (req, res) => {
     };
 
     // Detect Cisco payroll
-    const payrollDetection = getDetectedPayrollIncome(transactions, period);
+    const payrollDetection = getDetectedPayrollIncome(transactions, period, {
+      includePendingTransactions,
+    });
 
     const periodStartDate = new Date(startDate);
     const periodEndDate = new Date(exclusiveEndDate);
@@ -338,8 +171,8 @@ router.post('/auto-detect', (req, res) => {
     const now = new Date().toISOString();
 
     for (const bill of bills) {
-      const dueDate = computeDueDateForPeriod(bill.due_day, periodStartDate);
-      if (dueDate >= periodEndDate) continue;
+      const dueDate = getBillDueDateForPeriod(bill, period);
+      if (!dueDate || dueDate >= periodEndDate) continue;
 
       const existing = existingByBillId.get(bill.id);
       if (existing?.manually_overridden) {
@@ -353,11 +186,22 @@ router.post('/auto-detect', (req, res) => {
 
       for (const tx of transactions) {
         if (!isTransactionCandidateForBill(tx, periodStartDate, periodEndDate, dueDate)) continue;
+        if (!includePendingTransactions && tx.pending) continue;
+        if (matchedTransactionIds.has(tx.id)) continue;
+        if (tx._isIgnoredIncomeOrTransfer ?? isIgnoredIncomeOrTransfer(tx)) continue;
+        if (tx._isCiscoPayroll ?? isCiscoPayrollTransaction(tx)) continue;
 
-        const result = scoreRecurringBillPaymentMatch(bill, tx, dueDate, matchedTransactionIds);
+        const result = scoreRecurringBillPaymentMatch(
+          {
+            ...bill,
+            matchWords: parseBillMatchWords(bill.match_words ?? bill.matchWords),
+          },
+          tx,
+          dueDate
+        );
         if (result.score >= 50 && result.score > bestScore) {
           bestScore = result.score;
-          bestMethod = result.method;
+          bestMethod = (result.reasons || []).join(',') || 'possible_match';
           bestMatch = { tx, score: result.score };
         }
       }
@@ -384,8 +228,8 @@ router.post('/auto-detect', (req, res) => {
         matches.push({
           billId: bill.id,
           billName: bill.name,
-          billMatchWords: parseMatchWords(bill.match_words ?? bill.matchWords),
-          matchWords: parseMatchWords(bill.match_words ?? bill.matchWords),
+          billMatchWords: parseBillMatchWords(bill.match_words ?? bill.matchWords),
+          matchWords: parseBillMatchWords(bill.match_words ?? bill.matchWords),
           transactionId: bestMatch.tx.id,
           transactionDate: bestMatch.tx.date,
           transactionDescription: bestMatch.tx.name || bestMatch.tx.description || bestMatch.tx.merchant_name || '',
@@ -418,8 +262,8 @@ router.post('/auto-detect', (req, res) => {
         possibleMatches.push({
           billId: bill.id,
           billName: bill.name,
-          billMatchWords: parseMatchWords(bill.match_words ?? bill.matchWords),
-          matchWords: parseMatchWords(bill.match_words ?? bill.matchWords),
+          billMatchWords: parseBillMatchWords(bill.match_words ?? bill.matchWords),
+          matchWords: parseBillMatchWords(bill.match_words ?? bill.matchWords),
           transactionId: bestMatch.tx.id,
           transactionDate: bestMatch.tx.date,
           transactionDescription: bestMatch.tx.name || bestMatch.tx.description || bestMatch.tx.merchant_name || '',

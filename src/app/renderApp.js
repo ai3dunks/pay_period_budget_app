@@ -344,4 +344,11 @@ function _attachGlobalListeners() {
       renderActivePage();
     }
   });
+
+  window.addEventListener('budget:safe-money-settings-updated', () => {
+    const { activeTab } = getAppState();
+    if (['dashboard', 'paycheck-planner', 'transfers', 'reports', 'data-health', 'cash-flow', 'closeout', 'recurring-bills', 'debt-snowball'].includes(activeTab)) {
+      renderActivePage();
+    }
+  });
 }

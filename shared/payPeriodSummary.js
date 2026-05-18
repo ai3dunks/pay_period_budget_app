@@ -91,6 +91,12 @@ function isBankOfAmericaCheckingAccount(account) {
   return subtype.includes('checking');
 }
 
+function isBillPaidFromBoa(value) {
+  const paidFrom = String(value || '').toLowerCase().trim();
+  if (!paidFrom) return false;
+  return BOA_NAME_PATTERNS.some((p) => paidFrom.includes(p));
+}
+
 function findBoaAccount(accounts = []) {
   const boaAccounts = (accounts || []).filter(isBankOfAmericaAccount);
   if (!boaAccounts.length) return null;
@@ -282,6 +288,7 @@ export function buildPayPeriodSummary({
   const bonusIncomeTransactions = periodIncomeOrPayrollTransactions.filter((row) => {
     if (normalizeText(row?.type) !== 'income') return false;
     if (normalizeText(row.category) !== 'bonus') return false;
+    if (!includePendingTransactions && row.pending) return false;
     if (selectedPayrollTransactionId && row.id === selectedPayrollTransactionId) return false;
     return toNumber(row.amount, 0) > 0;
   });
@@ -289,6 +296,7 @@ export function buildPayPeriodSummary({
   const otherIncomeTransactions = periodIncomeOrPayrollTransactions.filter((row) => {
     if (normalizeText(row?.type) !== 'income') return false;
     if (normalizeText(row.category) !== 'other income') return false;
+    if (!includePendingTransactions && row.pending) return false;
     if (selectedPayrollTransactionId && row.id === selectedPayrollTransactionId) return false;
     return toNumber(row.amount, 0) > 0;
   });
@@ -377,6 +385,8 @@ export function buildPayPeriodSummary({
   const unpaidRows = recurringRows.filter((row) => !row.status?.paid);
   const paidTotal = paidRows.reduce((sum, row) => sum + row.amount, 0);
   const unpaidTotal = unpaidRows.reduce((sum, row) => sum + row.amount, 0);
+  const unpaidBoaPaidBills = unpaidRows.filter((row) => isBillPaidFromBoa(row.paidFrom));
+  const unpaidBoaPaidBillsTotal = unpaidBoaPaidBills.reduce((sum, row) => sum + row.amount, 0);
 
   // ── Expenses ───────────────────────────────────────────────────────────────
   const expenseBudget = calculateExpenseBudget(expenseList);
@@ -435,7 +445,7 @@ export function buildPayPeriodSummary({
 
   const safeToSpend = calculateSafeToSpend({
     budgetIncome,
-    recurringBillsLeftToPay: dueTotal,
+    recurringBillsLeftToPay: unpaidTotal,
     expenseBudgetRemaining: expenseBudget.totalExpenseBudget - actualTotal,
     expenseOverrun: Math.max(0, actualTotal - budgetTotal),
     requiredTransfersRemaining:
@@ -450,7 +460,7 @@ export function buildPayPeriodSummary({
   const safeToTransfer = calculateSafeToTransfer({
     boaAccount,
     boaCurrentBalance: boaAccount ? boaAccount.balanceCurrent : null,
-    unpaidBoaBills: recurringDue.unpaidTotal,
+    unpaidBoaBills: unpaidBoaPaidBillsTotal,
     pendingBoaSpending,
     safetyBuffer: safeMoneySettings.safetyBuffer,
     includePendingTransactions,

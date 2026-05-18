@@ -263,6 +263,7 @@ export async function renderSettings(container) {
         includePendingTransactions: !!document.getElementById('safe-money-pending')?.checked,
       };
       await updateSetting('safe_money_settings', value);
+      emitAppEvent('budget:safe-money-settings-updated');
       if (messageEl) { messageEl.className = 'settings-message success'; messageEl.textContent = 'Safe Money settings saved.'; }
     } catch (err) {
       if (messageEl) { messageEl.className = 'settings-message error'; messageEl.textContent = err.message; }

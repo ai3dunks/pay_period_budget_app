@@ -5,6 +5,7 @@ import {
   formatCurrencyValue,
 } from '../utils/budgetCalculations.js';
 import { buildPayPeriodSummary } from '../utils/payPeriodSummary.js';
+import { loadBudgetContext } from '../utils/loadBudgetContext.js';
 import { fetchCloseoutRecord } from '../utils/closeoutClient.js';
 import {
   getTransferConfirmations,
@@ -200,63 +201,38 @@ export async function renderTransfers(container, period, periodLabel) {
   let masterListsError = '';
   let transactionsError = '';
 
-  let masterLists = { expenseList: [], recurringBillsList: [] };
+  let accounts = [];
+  let expenseList = [];
+  let recurringBillsList = [];
   let transactions = [];
   let billStatusRows = [];
   let manualIncomeByPeriod = {};
   let autoDetectedIncomeByPeriod = {};
   let splitSettingValue = {};
+  let safeMoneySettings = {};
 
   try {
-    masterLists = await fetchMasterLists();
+    const budgetContext = await loadBudgetContext({ period });
+    accounts = Array.isArray(budgetContext?.accounts) ? budgetContext.accounts : [];
+    transactions = Array.isArray(budgetContext?.transactions) ? budgetContext.transactions : [];
+    expenseList = Array.isArray(budgetContext?.expenseList) ? budgetContext.expenseList : [];
+    recurringBillsList = Array.isArray(budgetContext?.recurringBillsList) ? budgetContext.recurringBillsList : [];
+    billStatusRows = Array.isArray(budgetContext?.recurringBillStatuses) ? budgetContext.recurringBillStatuses : [];
+    manualIncomeByPeriod = budgetContext?.settings?.manualIncomeByPeriod || budgetContext?.settings?.budget_income_by_period || {};
+    autoDetectedIncomeByPeriod = budgetContext?.settings?.autoDetectedIncomeByPeriod || budgetContext?.settings?.auto_detected_income_by_period || {};
+    splitSettingValue = budgetContext?.settings?.splitSettings || {};
+    safeMoneySettings = budgetContext?.settings?.safeMoneySettings || {};
   } catch (err) {
-    console.error('Transfers: failed loading master lists:', err);
-    masterListsError = 'Master Lists could not be loaded.';
+    console.error('Transfers: failed loading budget context:', err);
     backendDown = String(err.message || '').includes('Failed to fetch');
-  }
-
-  try {
-    transactions = await fetchTransactions(period);
-  } catch (err) {
-    console.error('Transfers: failed loading transactions:', err);
+    masterListsError = 'Master Lists could not be loaded.';
     transactionsError = 'Transactions could not be loaded.';
-    backendDown = backendDown || String(err.message || '').includes('Failed to fetch');
   }
-
-  try {
-    billStatusRows = await fetchBillStatus(period.id);
-  } catch (err) {
-    console.error('Transfers: failed loading bill status:', err);
-  }
-
-  try {
-    manualIncomeByPeriod = await fetchSetting('budget_income_by_period');
-  } catch (err) {
-    console.error('Transfers: failed loading budget income setting:', err);
-    backendDown = backendDown || String(err.message || '').includes('Failed to fetch');
-  }
-
-  try {
-    autoDetectedIncomeByPeriod = await fetchSetting('auto_detected_income_by_period');
-  } catch (err) {
-    console.error('Transfers: failed loading detected income setting:', err);
-    backendDown = backendDown || String(err.message || '').includes('Failed to fetch');
-  }
-
-  try {
-    splitSettingValue = await fetchSetting('budget_split_settings');
-  } catch (err) {
-    console.error('Transfers: failed loading split settings:', err);
-    backendDown = backendDown || String(err.message || '').includes('Failed to fetch');
-  }
-
-  const expenseList = Array.isArray(masterLists.expenseList) ? masterLists.expenseList : [];
-  const recurringBillsList = Array.isArray(masterLists.recurringBillsList) ? masterLists.recurringBillsList : [];
 
   const splitSettings = splitSettingValue?.default || DEFAULT_BUDGET_SPLIT;
   const sharedSummary = buildPayPeriodSummary({
     period,
-    accounts: [],
+    accounts,
     transactions,
     expenseList,
     recurringBillsList,
@@ -267,6 +243,7 @@ export async function renderTransfers(container, period, periodLabel) {
       manualIncomeByPeriod,
       autoDetectedIncomeByPeriod,
       splitSettings,
+      safeMoneySettings,
     },
   });
   const safeMoney = sharedSummary.safeMoney || {

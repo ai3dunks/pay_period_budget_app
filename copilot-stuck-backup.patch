@@ -1,0 +1,1347 @@
+diff --git a/server/routes/recurringBills.js b/server/routes/recurringBills.js
+index d336d24..014bbd5 100644
+--- a/server/routes/recurringBills.js
++++ b/server/routes/recurringBills.js
+@@ -1,83 +1,14 @@
+ import { Router } from 'express';
+ import { randomUUID } from 'crypto';
+ import db from '../db.js';
++import { getDetectedPayrollIncome, isCiscoPayrollTransaction } from '../../shared/payrollDetection.js';
++import { getBillDueDateForPeriod, scoreRecurringBillPaymentMatch } from '../../shared/recurringBills.js';
++import { normalizeText, parseMatchWords, parseJsonSafe } from '../../shared/text.js';
+ 
+ const router = Router();
+ 
+-const CISCO_PAYROLL_PATTERNS = ['CISCO SYSTEMS', 'DES:PAYROLL', 'CISCO PAYROLL'];
+-
+ function parseRawJson(rawJson) {
+-  if (!rawJson) return null;
+-  if (typeof rawJson === 'object') return rawJson;
+-  if (typeof rawJson !== 'string') return null;
+-  try {
+-    return JSON.parse(rawJson);
+-  } catch {
+-    return null;
+-  }
+-}
+-
+-function collectPayrollSearchFields(tx) {
+-  const raw = parseRawJson(tx?.raw_json);
+-  return [
+-    tx?.name,
+-    tx?.description,
+-    tx?.merchant_name,
+-    tx?.raw_json,
+-    raw?.original_description,
+-    raw?.name,
+-    raw?.merchant_name,
+-  ];
+-}
+-
+-function isCiscoPayrollTransaction(tx) {
+-  const haystack = collectPayrollSearchFields(tx)
+-    .map((value) => String(value || '').toUpperCase())
+-    .filter(Boolean)
+-    .join(' ');
+-  return CISCO_PAYROLL_PATTERNS.some((pattern) => haystack.includes(pattern));
+-}
+-
+-function normalizeText(text) {
+-  return String(text || '')
+-    .toUpperCase()
+-    .replace(/[^A-Z0-9\s]/g, ' ')
+-    .replace(/\s+/g, ' ')
+-    .trim();
+-}
+-
+-function parseMatchWords(value) {
+-  if (!value) return [];
+-  if (Array.isArray(value)) {
+-    return parseMatchWords(value.join(','));
+-  }
+-  if (typeof value === 'object') {
+-    return parseMatchWords(JSON.stringify(value));
+-  }
+-  const str = String(value).trim();
+-  if (!str) return [];
+-
+-  let sourceWords = null;
+-  if (str.startsWith('[') && str.endsWith(']')) {
+-    try {
+-      const parsed = JSON.parse(str);
+-      if (Array.isArray(parsed)) sourceWords = parsed;
+-    } catch {
+-      sourceWords = null;
+-    }
+-  }
+-
+-  const seen = new Set();
+-  const rawWords = sourceWords || str.split(',');
+-  return rawWords
+-    .map((w) => String(w || '').trim())
+-    .filter((w) => {
+-      if (!w) return false;
+-      const key = w.toLowerCase();
+-      if (seen.has(key)) return false;
+-      seen.add(key);
+-      return true;
+-    });
++  return parseJsonSafe(rawJson);
+ }
+ 
+ function buildTransactionSearchText(tx) {
+@@ -93,61 +24,40 @@ function buildTransactionSearchText(tx) {
+   ].filter(Boolean).join(' '));
+ }
+ 
++function parseBillMatchWords(value) {
++  if (Array.isArray(value)) return parseMatchWords(value);
++  const parsed = parseRawJson(value);
++  if (Array.isArray(parsed)) return parseMatchWords(parsed);
++  return parseMatchWords(value);
++}
++
+ function isIgnoredIncomeOrTransfer(tx) {
+   const typeText = normalizeText(tx.type);
+   const categoryText = normalizeText(tx.category);
+   const searchText = buildTransactionSearchText(tx);
+   if (tx.ignored) return true;
+   if (Number(tx.amount || 0) >= 0) return true;
+-  if (typeText.includes('INCOME')) return true;
+-  if (typeText.includes('PAYCHECK')) return true;
+-  if (typeText.includes('TRANSFER')) return true;
+-  if (typeText.includes('DEPOSIT')) return true;
+-  if (categoryText.includes('INCOME')) return true;
+-  if (categoryText.includes('TRANSFER')) return true;
+-  if (categoryText.includes('PAYCHECK')) return true;
+-  if (searchText.includes('TRANSFER IN')) return true;
+-  if (searchText.includes('XFER IN')) return true;
+-  if (searchText.includes('DIRECT DEPOSIT')) return true;
++  if (typeText.includes('income')) return true;
++  if (typeText.includes('paycheck')) return true;
++  if (typeText.includes('transfer')) return true;
++  if (typeText.includes('deposit')) return true;
++  if (categoryText.includes('income')) return true;
++  if (categoryText.includes('transfer')) return true;
++  if (categoryText.includes('paycheck')) return true;
++  if (searchText.includes('transfer in')) return true;
++  if (searchText.includes('xfer in')) return true;
++  if (searchText.includes('direct deposit')) return true;
+   return false;
+ }
+ 
+-function getPayrollTransactionsForPeriod(transactions = [], period) {
+-  const periodStart = new Date(period.startDate);
+-  const periodEnd = new Date(period.exclusiveEndDate);
+-
+-  return (transactions || []).filter((tx) => {
+-    if (!tx || tx.ignored) return false;
+-    if (Number(tx.amount || 0) <= 0) return false;
+-    const txDate = new Date(tx.date);
+-    if (txDate < periodStart || txDate >= periodEnd) return false;
+-    return isCiscoPayrollTransaction(tx);
+-  });
+-}
+-
+-function getDetectedPayrollIncome(transactions = [], period) {
+-  const payrollTransactions = getPayrollTransactionsForPeriod(transactions, period);
+-  const amount = payrollTransactions.reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
+-  return {
+-    detected: payrollTransactions.length > 0,
+-    amount,
+-    count: payrollTransactions.length,
+-    transactionIds: payrollTransactions.map((tx) => tx.id).filter(Boolean),
+-    transactions: payrollTransactions,
+-  };
+-}
+-
+-function computeDueDateForPeriod(dueDay, periodStartDate) {
+-  const date = new Date(periodStartDate);
+-  date.setDate(Math.max(1, Math.min(31, Number(dueDay || 1))));
+-  if (date < periodStartDate) {
+-    date.setMonth(date.getMonth() + 1);
++function getSafeMoneyIncludePendingSetting() {
++  try {
++    const row = db.prepare('SELECT value_json FROM settings WHERE key = ?').get('safe_money_settings');
++    const parsed = parseJsonSafe(row?.value_json);
++    return parsed?.includePendingTransactions === true || parsed?.include_pending_transactions === true;
++  } catch {
++    return false;
+   }
+-  return date;
+-}
+-
+-function dayDiffAbs(a, b) {
+-  return Math.abs(Math.round((a - b) / (1000 * 60 * 60 * 24)));
+ }
+ 
+ function isTransactionCandidateForBill(tx, periodStart, periodEnd, dueDate) {
+@@ -158,86 +68,6 @@ function isTransactionCandidateForBill(tx, periodStart, periodEnd, dueDate) {
+   return txDate > dueDate && txDate <= afterDueLimit;
+ }
+ 
+-function scoreRecurringBillPaymentMatch(bill, transaction, dueDate, alreadyMatchedTransactionIds) {
+-  if (alreadyMatchedTransactionIds.has(transaction.id)) return { score: -100, method: 'already_matched' };
+-  if (transaction._isIgnoredIncomeOrTransfer ?? isIgnoredIncomeOrTransfer(transaction)) return { score: -100, method: 'ignored_or_income_or_transfer' };
+-
+-  const txSearchText = transaction._searchText || buildTransactionSearchText(transaction);
+-  if (transaction._isCiscoPayroll ?? isCiscoPayrollTransaction(transaction)) return { score: -100, method: 'payroll' };
+-
+-  const billAmount = Math.abs(Number(bill.amount || 0));
+-  const txAmount = Math.abs(Number(transaction.amount || 0));
+-  const amountDelta = Math.abs(billAmount - txAmount);
+-
+-  let score = 0;
+-  let amountClose = false;
+-  let dateClose = false;
+-  let foundMatchWord = false;
+-  let foundNameKeyword = false;
+-  const methods = [];
+-
+-  if (amountDelta < 0.01) {
+-    score += 45;
+-    amountClose = true;
+-    methods.push('exact_amount');
+-  } else if (amountDelta <= 1) {
+-    score += 35;
+-    amountClose = true;
+-    methods.push('amount_within_1');
+-  } else if (billAmount > 0 && amountDelta / billAmount <= 0.03) {
+-    score += 25;
+-    amountClose = true;
+-    methods.push('amount_within_3pct');
+-  }
+-
+-  const txDate = new Date(transaction.date);
+-  const daysDiff = dayDiffAbs(txDate, dueDate);
+-  if (daysDiff <= 3) {
+-    score += 20;
+-    dateClose = true;
+-    methods.push('date_within_3_days');
+-  } else if (daysDiff <= 5) {
+-    score += 10;
+-    dateClose = true;
+-    methods.push('date_within_5_days');
+-  }
+-
+-  const matchWords = parseMatchWords(bill.match_words ?? bill.matchWords);
+-  if (matchWords.some((word) => txSearchText.includes(normalizeText(word)))) {
+-    score += 35;
+-    foundMatchWord = true;
+-    methods.push('match_word');
+-  }
+-
+-  const billNameTokens = normalizeText(bill.name)
+-    .split(' ')
+-    .filter((token) => token.length >= 4);
+-  if (billNameTokens.some((token) => txSearchText.includes(token))) {
+-    score += 20;
+-    foundNameKeyword = true;
+-    methods.push('bill_name_keyword');
+-  }
+-
+-  if (bill.autopay && amountClose && dateClose) {
+-    score += 10;
+-    methods.push('autopay_amount_date_bonus');
+-  }
+-
+-  if (bill.autopay && foundMatchWord) {
+-    score += 10;
+-    methods.push('autopay_match_word_bonus');
+-  }
+-
+-  return {
+-    score,
+-    method: methods.join(','),
+-    amountClose,
+-    dateClose,
+-    foundMatchWord,
+-    foundNameKeyword,
+-  };
+-}
+-
+ function upsertStatus(values) {
+   db.prepare(
+     `INSERT INTO recurring_bill_status (
+@@ -282,6 +112,7 @@ function upsertStatus(values) {
+ router.post('/auto-detect', (req, res) => {
+   try {
+     const { periodId, startDate, exclusiveEndDate } = req.body;
++    const includePendingTransactions = getSafeMoneyIncludePendingSetting();
+ 
+     if (!periodId || !startDate || !exclusiveEndDate) {
+       return res.status(400).json({
+@@ -299,19 +130,19 @@ router.post('/auto-detect', (req, res) => {
+     const queryEndIso = queryEndDate.toISOString().slice(0, 10);
+ 
+     // Fetch transactions for this period plus 5-day trailing window
+-    const transactions = db
+-      .prepare(
+-        `SELECT * FROM transactions
+-         WHERE date >= ? AND date < ?
+-         ORDER BY date DESC`
+-      )
+-      .all(startDate, queryEndIso)
+-      .map((tx) => ({
+-        ...tx,
+-        _searchText: buildTransactionSearchText(tx),
+-        _isIgnoredIncomeOrTransfer: isIgnoredIncomeOrTransfer(tx),
+-        _isCiscoPayroll: isCiscoPayrollTransaction(tx),
+-      }));
++    const transactions = db
++      .prepare(
++        `SELECT * FROM transactions
++         WHERE date >= ? AND date < ?
++         ORDER BY date DESC`
++      )
++      .all(startDate, queryEndIso)
++      .map((tx) => ({
++        ...tx,
++        _searchText: buildTransactionSearchText(tx),
++        _isIgnoredIncomeOrTransfer: isIgnoredIncomeOrTransfer(tx),
++        _isCiscoPayroll: isCiscoPayrollTransaction(tx),
++      }));
+ 
+     const period = {
+       id: periodId,
+@@ -320,7 +151,9 @@ router.post('/auto-detect', (req, res) => {
+     };
+ 
+     // Detect Cisco payroll
+-    const payrollDetection = getDetectedPayrollIncome(transactions, period);
++    const payrollDetection = getDetectedPayrollIncome(transactions, period, {
++      includePendingTransactions,
++    });
+ 
+     const periodStartDate = new Date(startDate);
+     const periodEndDate = new Date(exclusiveEndDate);
+@@ -338,8 +171,8 @@ router.post('/auto-detect', (req, res) => {
+     const now = new Date().toISOString();
+ 
+     for (const bill of bills) {
+-      const dueDate = computeDueDateForPeriod(bill.due_day, periodStartDate);
+-      if (dueDate >= periodEndDate) continue;
++      const dueDate = getBillDueDateForPeriod(bill, period);
++      if (!dueDate || dueDate >= periodEndDate) continue;
+ 
+       const existing = existingByBillId.get(bill.id);
+       if (existing?.manually_overridden) {
+@@ -353,11 +186,22 @@ router.post('/auto-detect', (req, res) => {
+ 
+       for (const tx of transactions) {
+         if (!isTransactionCandidateForBill(tx, periodStartDate, periodEndDate, dueDate)) continue;
+-
+-        const result = scoreRecurringBillPaymentMatch(bill, tx, dueDate, matchedTransactionIds);
++        if (!includePendingTransactions && tx.pending) continue;
++        if (matchedTransactionIds.has(tx.id)) continue;
++        if (tx._isIgnoredIncomeOrTransfer ?? isIgnoredIncomeOrTransfer(tx)) continue;
++        if (tx._isCiscoPayroll ?? isCiscoPayrollTransaction(tx)) continue;
++
++        const result = scoreRecurringBillPaymentMatch(
++          {
++            ...bill,
++            matchWords: parseBillMatchWords(bill.match_words ?? bill.matchWords),
++          },
++          tx,
++          dueDate
++        );
+         if (result.score >= 50 && result.score > bestScore) {
+           bestScore = result.score;
+-          bestMethod = result.method;
++          bestMethod = (result.reasons || []).join(',') || 'possible_match';
+           bestMatch = { tx, score: result.score };
+         }
+       }
+@@ -384,8 +228,8 @@ router.post('/auto-detect', (req, res) => {
+         matches.push({
+           billId: bill.id,
+           billName: bill.name,
+-          billMatchWords: parseMatchWords(bill.match_words ?? bill.matchWords),
+-          matchWords: parseMatchWords(bill.match_words ?? bill.matchWords),
++          billMatchWords: parseBillMatchWords(bill.match_words ?? bill.matchWords),
++          matchWords: parseBillMatchWords(bill.match_words ?? bill.matchWords),
+           transactionId: bestMatch.tx.id,
+           transactionDate: bestMatch.tx.date,
+           transactionDescription: bestMatch.tx.name || bestMatch.tx.description || bestMatch.tx.merchant_name || '',
+@@ -418,8 +262,8 @@ router.post('/auto-detect', (req, res) => {
+         possibleMatches.push({
+           billId: bill.id,
+           billName: bill.name,
+-          billMatchWords: parseMatchWords(bill.match_words ?? bill.matchWords),
+-          matchWords: parseMatchWords(bill.match_words ?? bill.matchWords),
++          billMatchWords: parseBillMatchWords(bill.match_words ?? bill.matchWords),
++          matchWords: parseBillMatchWords(bill.match_words ?? bill.matchWords),
+           transactionId: bestMatch.tx.id,
+           transactionDate: bestMatch.tx.date,
+           transactionDescription: bestMatch.tx.name || bestMatch.tx.description || bestMatch.tx.merchant_name || '',
+@@ -471,9 +315,9 @@ router.post('/auto-detect', (req, res) => {
+       },
+       details: [...matches, ...possibleMatches, ...unmatched],
+     });
+-  } catch (err) {
+-    console.error('Error in auto-detect:', err);
+-    res.status(500).json({ error: 'Failed to auto-detect recurring bills.' });
++  } catch (err) {
++    console.error('Error in auto-detect:', err);
++    res.status(500).json({ error: 'Failed to auto-detect recurring bills.' });
+   }
+ });
+ 
+@@ -530,9 +374,9 @@ router.get('/status', (req, res) => {
+     });
+ 
+     res.json(status);
+-  } catch (err) {
+-    console.error('Error fetching recurring bill status:', err);
+-    res.status(500).json({ error: 'Failed to fetch recurring bill status.' });
++  } catch (err) {
++    console.error('Error fetching recurring bill status:', err);
++    res.status(500).json({ error: 'Failed to fetch recurring bill status.' });
+   }
+ });
+ 
+@@ -590,10 +434,10 @@ router.patch('/status', (req, res) => {
+       manuallyOverridden: !!result.manually_overridden,
+       updatedAt: result.updated_at
+     });
+-  } catch (err) {
+-    console.error('Error updating recurring bill status:', err);
+-    res.status(500).json({ error: 'Failed to update recurring bill status.' });
+-  }
+-});
++  } catch (err) {
++    console.error('Error updating recurring bill status:', err);
++    res.status(500).json({ error: 'Failed to update recurring bill status.' });
++  }
++});
+ 
+ export default router;
+diff --git a/shared/payPeriodSummary.js b/shared/payPeriodSummary.js
+index 5070a5b..b02ae46 100644
+--- a/shared/payPeriodSummary.js
++++ b/shared/payPeriodSummary.js
+@@ -91,6 +91,12 @@ function isBankOfAmericaCheckingAccount(account) {
+   return subtype.includes('checking');
+ }
+ 
++function isBillPaidFromBoa(value) {
++  const paidFrom = String(value || '').toLowerCase().trim();
++  if (!paidFrom) return false;
++  return BOA_NAME_PATTERNS.some((p) => paidFrom.includes(p));
++}
++
+ function findBoaAccount(accounts = []) {
+   const boaAccounts = (accounts || []).filter(isBankOfAmericaAccount);
+   if (!boaAccounts.length) return null;
+@@ -282,6 +288,7 @@ export function buildPayPeriodSummary({
+   const bonusIncomeTransactions = periodIncomeOrPayrollTransactions.filter((row) => {
+     if (normalizeText(row?.type) !== 'income') return false;
+     if (normalizeText(row.category) !== 'bonus') return false;
++    if (!includePendingTransactions && row.pending) return false;
+     if (selectedPayrollTransactionId && row.id === selectedPayrollTransactionId) return false;
+     return toNumber(row.amount, 0) > 0;
+   });
+@@ -289,6 +296,7 @@ export function buildPayPeriodSummary({
+   const otherIncomeTransactions = periodIncomeOrPayrollTransactions.filter((row) => {
+     if (normalizeText(row?.type) !== 'income') return false;
+     if (normalizeText(row.category) !== 'other income') return false;
++    if (!includePendingTransactions && row.pending) return false;
+     if (selectedPayrollTransactionId && row.id === selectedPayrollTransactionId) return false;
+     return toNumber(row.amount, 0) > 0;
+   });
+@@ -377,6 +385,8 @@ export function buildPayPeriodSummary({
+   const unpaidRows = recurringRows.filter((row) => !row.status?.paid);
+   const paidTotal = paidRows.reduce((sum, row) => sum + row.amount, 0);
+   const unpaidTotal = unpaidRows.reduce((sum, row) => sum + row.amount, 0);
++  const unpaidBoaPaidBills = unpaidRows.filter((row) => isBillPaidFromBoa(row.paidFrom));
++  const unpaidBoaPaidBillsTotal = unpaidBoaPaidBills.reduce((sum, row) => sum + row.amount, 0);
+ 
+   // ── Expenses ───────────────────────────────────────────────────────────────
+   const expenseBudget = calculateExpenseBudget(expenseList);
+@@ -435,7 +445,7 @@ export function buildPayPeriodSummary({
+ 
+   const safeToSpend = calculateSafeToSpend({
+     budgetIncome,
+-    recurringBillsLeftToPay: dueTotal,
++    recurringBillsLeftToPay: unpaidTotal,
+     expenseBudgetRemaining: expenseBudget.totalExpenseBudget - actualTotal,
+     expenseOverrun: Math.max(0, actualTotal - budgetTotal),
+     requiredTransfersRemaining:
+@@ -450,7 +460,7 @@ export function buildPayPeriodSummary({
+   const safeToTransfer = calculateSafeToTransfer({
+     boaAccount,
+     boaCurrentBalance: boaAccount ? boaAccount.balanceCurrent : null,
+-    unpaidBoaBills: recurringDue.unpaidTotal,
++    unpaidBoaBills: unpaidBoaPaidBillsTotal,
+     pendingBoaSpending,
+     safetyBuffer: safeMoneySettings.safetyBuffer,
+     includePendingTransactions,
+diff --git a/shared/transfers.js b/shared/transfers.js
+index 2f8eb9f..9c70530 100644
+--- a/shared/transfers.js
++++ b/shared/transfers.js
+@@ -45,13 +45,29 @@ function normalizeSplitInput(splitSettings = {}) {
+  */
+ export function calculateBudgetSplit({ budgetIncome, recurringBillsDue = [], splitSettings = {} }) {
+   const income = toNumber(budgetIncome, 0);
++  const percents = normalizeSplitInput(splitSettings);
++  const percentTotal =
++    toNumber(percents.Needs, 0) +
++    toNumber(percents.Wants, 0) +
++    toNumber(percents['Debts/Savings'], 0);
++
++  const actualByGroup = {
++    Needs: 0,
++    Wants: 0,
++    'Debts/Savings': 0,
++  };
++
++  for (const bill of recurringBillsDue || []) {
++    if (!bill) continue;
++    const group = normalizeGroupName(bill.budget_group ?? bill.category);
++    if (!group) continue;
++    actualByGroup[group] += Math.abs(toNumber(bill.amount, 0));
++  }
++
+   const rows = BUDGET_CATEGORIES.map((category) => {
+-    const percent = splitSettings[category] ?? DEFAULT_BUDGET_SPLIT[category] ?? 0;
++    const percent = toNumber(percents[category], 0);
+     const allotted = (income * percent) / 100;
+-    const actual = (recurringBillsDue || []).reduce((sum, bill) => {
+-      if (String(bill.category || '').trim() !== category) return sum;
+-      return sum + toNumber(bill.amount, 0);
+-    }, 0);
++    const actual = actualByGroup[category] || 0;
+     return {
+       category,
+       percent,
+@@ -60,15 +76,21 @@ export function calculateBudgetSplit({ budgetIncome, recurringBillsDue = [], spl
+       remaining: allotted - actual,
+     };
+   });
++
++  const totalActual = rows.reduce((sum, row) => sum + toNumber(row.actual, 0), 0);
++  const isValid = Math.abs(percentTotal - 100) < 0.0001;
++
+   return {
+     rows,
+     total: {
+-      percent: 100,
++      percent: percentTotal,
+       allotted: income,
+-      actual: (recurringBillsDue || []).reduce((sum, bill) => sum + toNumber(bill.amount, 0), 0),
+-      remaining:
+-        income -
+-        (recurringBillsDue || []).reduce((sum, bill) => sum + toNumber(bill.amount, 0), 0),
++      actual: totalActual,
++      remaining: income - totalActual,
++    },
++    validation: {
++      percentTotal,
++      isValid,
+     },
+   };
+ }
+diff --git a/src/app/renderApp.js b/src/app/renderApp.js
+index 29da9fa..844be67 100644
+--- a/src/app/renderApp.js
++++ b/src/app/renderApp.js
+@@ -344,4 +344,11 @@ function _attachGlobalListeners() {
+       renderActivePage();
+     }
+   });
++
++  window.addEventListener('budget:safe-money-settings-updated', () => {
++    const { activeTab } = getAppState();
++    if (['dashboard', 'paycheck-planner', 'transfers', 'reports', 'data-health', 'cash-flow', 'closeout', 'recurring-bills', 'debt-snowball'].includes(activeTab)) {
++      renderActivePage();
++    }
++  });
+ }
+diff --git a/src/ui/dashboard.js b/src/ui/dashboard.js
+index bdafe99..3c42f2c 100644
+--- a/src/ui/dashboard.js
++++ b/src/ui/dashboard.js
+@@ -90,11 +90,11 @@ function renderCommandStrip() {
+   );
+ }
+ 
+-function renderPrimaryCards(summary, visibility = {}) {
+-  const showPayPeriodCard = visibility.showPayPeriodCard !== false;
+-  const showSafeToSpendCard = visibility.showSafeToSpendCard !== false;
+-  const safeSpend = summary.safeMoney?.safeToSpend || { amount: summary.safeToSpend, status: 'warning', blockers: [], warnings: [], breakdown: {} };
+-  const safeTransfer = summary.safeMoney?.safeToTransfer || { amount: summary.safeToTransfer, status: 'warning', blockers: [], warnings: [], breakdown: {} };
++function renderPrimaryCards(summary, visibility = {}) {
++  const showPayPeriodCard = visibility.showPayPeriodCard !== false;
++  const showSafeToSpendCard = visibility.showSafeToSpendCard !== false;
++  const safeSpend = summary.safeMoney?.safeToSpend || { amount: summary.safeToSpend, status: 'warning', blockers: [], warnings: [], breakdown: {} };
++  const safeTransfer = summary.safeMoney?.safeToTransfer || { amount: summary.safeToTransfer, status: 'warning', blockers: [], warnings: [], breakdown: {} };
+   const incomeSource = summary.income.source === 'No income found' ? 'Unavailable' : (summary.income.source || 'Unavailable');
+   const payrollLines = [
+     summary.income.regularPaycheck ? 'Paycheck ' + formatMoney(summary.income.regularPaycheck) : null,
+@@ -106,39 +106,39 @@ function renderPrimaryCards(summary, visibility = {}) {
+   const expenseRows = Array.isArray(summary.expenses.categoryRows) ? summary.expenses.categoryRows : [];
+   const expenseOverBudgetCount = expenseRows.filter((row) => row.overBudget).length;
+ 
+-  const cards = [
+-    ...(showPayPeriodCard
+-      ? [
+-          { label: 'Budget Income', value: summary.income.budgetIncome, tone: 'good', subtext: ['Source: ' + incomeSource, ...payrollLines] },
+-        ]
+-      : []),
+-    ...(showSafeToSpendCard
+-      ? [
+-          {
+-            label: 'Safe to Spend',
+-            value: safeSpend.amount,
+-            tone: safeSpend.status === 'danger' ? 'danger' : safeSpend.status === 'warning' || safeSpend.status === 'tight' ? 'warning' : 'good',
+-            unavailable: safeSpend.status === 'unavailable',
+-            status: safeSpend,
+-          },
+-          {
+-            label: 'Safe to Transfer',
+-            value: safeTransfer.amount,
+-            tone: safeTransfer.status === 'danger' ? 'danger' : safeTransfer.status === 'warning' || safeTransfer.status === 'tight' ? 'warning' : 'good',
+-            unavailable: safeTransfer.status === 'unavailable',
+-            status: safeTransfer,
+-          },
+-        ]
+-      : []),
+-    ...(showPayPeriodCard
+-      ? [
+-          { label: 'Bills Left', value: summary.recurringBills.unpaidTotal, tone: Number(summary.recurringBills.unpaidTotal || 0) > Number(summary.income.budgetIncome || 0) ? 'warning' : 'good', subtext: [summary.recurringBills.unpaidCount + ' unpaid bill' + (summary.recurringBills.unpaidCount === 1 ? '' : 's'), recurringNext ? 'Next unpaid: ' + recurringNext.billName + ' ' + (recurringNext.dueDateLabel || recurringNext.dueDate || '') : 'No unpaid bills left'] },
+-          { label: 'Expense Remaining', value: summary.expenses.remaining, tone: Number(summary.expenses.remaining || 0) < 0 ? 'danger' : 'good', subtext: ['Actual ' + formatMoney(summary.expenses.actualTotal), 'Budget ' + formatMoney(summary.expenses.budgetTotal), expenseOverBudgetCount ? expenseOverBudgetCount + ' category' + (expenseOverBudgetCount === 1 ? '' : 'ies') + ' over budget' : 'No categories over budget'] },
+-        ]
+-      : []),
+-  ];
+-
+-  if (!cards.length) return '';
++  const cards = [
++    ...(showPayPeriodCard
++      ? [
++          { label: 'Budget Income', value: summary.income.budgetIncome, tone: 'good', subtext: ['Source: ' + incomeSource, ...payrollLines] },
++        ]
++      : []),
++    ...(showSafeToSpendCard
++      ? [
++          {
++            label: 'Safe to Spend',
++            value: safeSpend.amount,
++            tone: safeSpend.status === 'danger' ? 'danger' : safeSpend.status === 'warning' || safeSpend.status === 'tight' ? 'warning' : 'good',
++            unavailable: safeSpend.status === 'unavailable',
++            status: safeSpend,
++          },
++          {
++            label: 'Safe to Transfer',
++            value: safeTransfer.amount,
++            tone: safeTransfer.status === 'danger' ? 'danger' : safeTransfer.status === 'warning' || safeTransfer.status === 'tight' ? 'warning' : 'good',
++            unavailable: safeTransfer.status === 'unavailable',
++            status: safeTransfer,
++          },
++        ]
++      : []),
++    ...(showPayPeriodCard
++      ? [
++          { label: 'Bills Left', value: summary.recurringBills.unpaidTotal, tone: Number(summary.recurringBills.unpaidTotal || 0) > Number(summary.income.budgetIncome || 0) ? 'warning' : 'good', subtext: [summary.recurringBills.unpaidCount + ' unpaid bill' + (summary.recurringBills.unpaidCount === 1 ? '' : 's'), recurringNext ? 'Next unpaid: ' + recurringNext.billName + ' ' + (recurringNext.dueDateLabel || recurringNext.dueDate || '') : 'No unpaid bills left'] },
++          { label: 'Expense Remaining', value: summary.expenses.remaining, tone: Number(summary.expenses.remaining || 0) < 0 ? 'danger' : 'good', subtext: ['Actual ' + formatMoney(summary.expenses.actualTotal), 'Budget ' + formatMoney(summary.expenses.budgetTotal), expenseOverBudgetCount ? expenseOverBudgetCount + ' category' + (expenseOverBudgetCount === 1 ? '' : 'ies') + ' over budget' : 'No categories over budget'] },
++        ]
++      : []),
++  ];
++
++  if (!cards.length) return '';
+ 
+   return (
+     '<section class="dashboard-primary-grid">' +
+@@ -146,7 +146,7 @@ function renderPrimaryCards(summary, visibility = {}) {
+       '<article class="card command-card compact">' +
+       '<div class="metric-card">' +
+       '<div class="metric-label">' + escapeHtml(card.label) + '</div>' +
+-      ((card.unavailable || card.status)
++      (card.unavailable
+         ? '<div class="metric-value metric-value-unavailable">Unavailable</div>'
+         : '<div class="metric-value ' + (card.tone ? 'text-' + card.tone : '') + '">' + escapeHtml(formatMoney(card.value)) + '</div>') +
+       '<div class="metric-subtext">' + (card.subtext ? card.subtext.map((line) => '<div>' + escapeHtml(line) + '</div>').join('') : '') + '</div>' +
+@@ -415,7 +415,7 @@ function mapHealthIssueToAction(issue) {
+   };
+ }
+ 
+-function buildNextActions({ summary, reviewStats, historySnapshots, loadError, closeoutRecord, period, healthReport, showSafeMoneyActions = true }) {
++function buildNextActions({ summary, reviewStats, historySnapshots, loadError, closeoutRecord, period, healthReport, showSafeMoneyActions = true }) {
+   const actions = [];
+   const safeTransfer = summary.safeMoney?.safeToTransfer || { amount: summary.safeToTransfer, blockers: [], status: 'warning' };
+   const today = new Date();
+@@ -478,9 +478,9 @@ function buildNextActions({ summary, reviewStats, historySnapshots, loadError, c
+     actions.push({ label: 'Close this pay period', reason: 'The current budget period ends soon.', buttonText: 'Open Closeout', destination: 'closeout' });
+   }
+ 
+-  if (showSafeMoneyActions && (Number(safeTransfer.amount || 0) < 0 || (safeTransfer.blockers || []).length)) {
+-    actions.push({ label: 'Transfer shortfall', reason: (safeTransfer.blockers || []).length ? safeTransfer.blockers[0] : 'Safe to transfer is short by ' + formatMoney(Math.abs(safeTransfer.amount || 0)) + '.', buttonText: 'Go to Transfers', destination: 'transfers' });
+-  }
++  if (showSafeMoneyActions && (Number(safeTransfer.amount || 0) < 0 || (safeTransfer.blockers || []).length)) {
++    actions.push({ label: 'Transfer shortfall', reason: (safeTransfer.blockers || []).length ? safeTransfer.blockers[0] : 'Safe to transfer is short by ' + formatMoney(Math.abs(safeTransfer.amount || 0)) + '.', buttonText: 'Go to Transfers', destination: 'transfers' });
++  }
+ 
+   const hasCurrentSnapshot = Array.isArray(historySnapshots) && historySnapshots.some((snapshot) => snapshot.period_id === summary.period.id && snapshot.isLatestForPeriod);
+   if (!hasCurrentSnapshot) {
+@@ -510,7 +510,7 @@ function renderNextBestActions(actions) {
+   );
+ }
+ 
+-function renderReportsPreview(reportsSummary, options = {}) {
++function renderReportsPreview(reportsSummary, options = {}) {
+   const periods = Array.isArray(reportsSummary?.periods) ? reportsSummary.periods : [];
+   const current = periods[0] || null;
+   const previous = periods[1] || null;
+@@ -538,27 +538,27 @@ function renderReportsPreview(reportsSummary, options = {}) {
+ 
+   return (
+     '<article class="card command-card compact">' +
+-    '<div class="card-header"><h3 class="card-title">Reports Preview</h3><p class="card-description">Quick trend check vs prior period.</p></div>' +
+-    '<div class="action-list">' +
+-    line('Expenses', expensesDelta) +
+-    (options.showSafeToSpendCard === false ? '' : line('Safe to Spend', safeDelta)) +
+-    line('Recurring bills', billsDelta) +
++    '<div class="card-header"><h3 class="card-title">Reports Preview</h3><p class="card-description">Quick trend check vs prior period.</p></div>' +
++    '<div class="action-list">' +
++    line('Expenses', expensesDelta) +
++    (options.showSafeToSpendCard === false ? '' : line('Safe to Spend', safeDelta)) +
++    line('Recurring bills', billsDelta) +
+     '</div>' +
+     '<div class="dashboard-secondary-actions"><button class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="reports">View Reports</button></div>' +
+     '</article>'
+-  );
+-}
+-
+-function renderDashboardDebugPanel(data) {
+-  return (
+-    '<article class="card command-card compact">' +
+-    '<div class="card-header"><h3 class="card-title">Dashboard Debug Panel</h3><p class="card-description">Non-secret render diagnostics for Command Center validation.</p></div>' +
+-    '<pre class="debug-panel">' + escapeHtml(JSON.stringify(data, null, 2)) + '</pre>' +
+-    '</article>'
+-  );
+-}
+-
+-function deriveDataHealth({ summary, reviewStats, hasBackendIssue, payrollMissing }) {
++  );
++}
++
++function renderDashboardDebugPanel(data) {
++  return (
++    '<article class="card command-card compact">' +
++    '<div class="card-header"><h3 class="card-title">Dashboard Debug Panel</h3><p class="card-description">Non-secret render diagnostics for Command Center validation.</p></div>' +
++    '<pre class="debug-panel">' + escapeHtml(JSON.stringify(data, null, 2)) + '</pre>' +
++    '</article>'
++  );
++}
++
++function deriveDataHealth({ summary, reviewStats, hasBackendIssue, payrollMissing }) {
+   if (hasBackendIssue) return 'Error';
+   const urgentOverdueBills = (summary.recurringBills.unpaidRows || []).some((row) => row.statusLabel === 'Overdue');
+   const safeSpend = summary.safeMoney?.safeToSpend || { amount: summary.safeToSpend, status: 'warning' };
+@@ -647,18 +647,18 @@ export async function renderDashboard(container, options = {}) {
+     const dataHealthLabel = healthReport ? formatHealthLabel(healthReport) : 'Data Health: ' + fallbackHealth;
+     const lastSyncLabel = getLastSyncLabel(plaidStatus);
+     const syncState = Array.isArray(plaidStatus?.items) && plaidStatus.items.length ? 'Connected' : 'No synced items';
+-    const showPayPeriodCard = feat('showPayPeriodCard');
+-    const showSafeToSpendCard = feat('showSafeToSpendCard');
+-    const dashboardFeatureFlags = {
+-      showPayPeriodCard,
+-      showBudgetSummaryCards: feat('showBudgetSummaryCards'),
+-      showSafeToSpendCard,
+-      showTransferSummaryCard: feat('showTransferSummaryCard'),
+-      showCashFlowPreview: feat('showCashFlowPreview'),
+-      showDebtPreview: feat('showDebtPreview'),
+-      showDebugPanels: feat('showDebugPanels'),
+-    };
+-    const nextActions = buildNextActions({ summary, reviewStats, historySnapshots, closeoutRecord, period, healthReport, showSafeMoneyActions: showSafeToSpendCard });
++    const showPayPeriodCard = feat('showPayPeriodCard');
++    const showSafeToSpendCard = feat('showSafeToSpendCard');
++    const dashboardFeatureFlags = {
++      showPayPeriodCard,
++      showBudgetSummaryCards: feat('showBudgetSummaryCards'),
++      showSafeToSpendCard,
++      showTransferSummaryCard: feat('showTransferSummaryCard'),
++      showCashFlowPreview: feat('showCashFlowPreview'),
++      showDebtPreview: feat('showDebtPreview'),
++      showDebugPanels: feat('showDebugPanels'),
++    };
++    const nextActions = buildNextActions({ summary, reviewStats, historySnapshots, closeoutRecord, period, healthReport, showSafeMoneyActions: showSafeToSpendCard });
+     const splitSummary = calculateFlexibleBudgetSplitEngine({
+       budgetIncome: summary.income.budgetIncome,
+       recurringBillsDue: summary.recurringBills?.dueRows || [],
+@@ -675,25 +675,25 @@ export async function renderDashboard(container, options = {}) {
+ 
+     container.innerHTML =
+       '<div class="dashboard-page">' +
+-      renderTopBar({ period: summary.period, dataHealthLabel, dataHealthStatus, lastSyncLabel, syncState, closeoutStatus }) +
+-      renderCommandStrip() +
+-      renderPrimaryCards(summary, { showPayPeriodCard, showSafeToSpendCard }) +
+-      '<section class="dashboard-secondary-grid">' +
+-      '<div class="dashboard-secondary-column">' +
+-      (dashboardFeatureFlags.showBudgetSummaryCards ? renderBudgetSplitSummary(splitSummary) : '') +
+-      (dashboardFeatureFlags.showBudgetSummaryCards ? renderEnvelopeSummary({ splitSummary, bucketSummary }) : '') +
+-      renderReviewQueue(reviewStats, hasRulesEngine) +
+-      renderBillsAttention(summary) +
+-      '</div>' +
+-      '<div class="dashboard-secondary-column">' + (dashboardFeatureFlags.showCashFlowPreview ? renderCashFlowForecastCard(cashFlowForecast) : '') + (dashboardFeatureFlags.showTransferSummaryCard ? renderTransferActions(summary) : '') + (dashboardFeatureFlags.showBudgetSummaryCards ? renderSpendingWatchlists(summary) : '') + (dashboardFeatureFlags.showDebtPreview ? renderReportsPreview(reportsSummary, { showSafeToSpendCard }) : '') + renderNextBestActions(nextActions) + (dashboardFeatureFlags.showDebugPanels ? renderDashboardDebugPanel({
+-        featureFlags: dashboardFeatureFlags,
+-        periodId: summary.period?.id || period.id,
+-        dataHealthStatus,
+-        reviewStats,
+-        splitTotals: splitSummary?.totals || null,
+-        renderedAt: new Date().toISOString(),
+-      }) : '') + '</div>' +
+-      '</section>' +
++      renderTopBar({ period: summary.period, dataHealthLabel, dataHealthStatus, lastSyncLabel, syncState, closeoutStatus }) +
++      renderCommandStrip() +
++      renderPrimaryCards(summary, { showPayPeriodCard, showSafeToSpendCard }) +
++      '<section class="dashboard-secondary-grid">' +
++      '<div class="dashboard-secondary-column">' +
++      (dashboardFeatureFlags.showBudgetSummaryCards ? renderBudgetSplitSummary(splitSummary) : '') +
++      (dashboardFeatureFlags.showBudgetSummaryCards ? renderEnvelopeSummary({ splitSummary, bucketSummary }) : '') +
++      renderReviewQueue(reviewStats, hasRulesEngine) +
++      renderBillsAttention(summary) +
++      '</div>' +
++      '<div class="dashboard-secondary-column">' + (dashboardFeatureFlags.showCashFlowPreview ? renderCashFlowForecastCard(cashFlowForecast) : '') + (dashboardFeatureFlags.showTransferSummaryCard ? renderTransferActions(summary) : '') + (dashboardFeatureFlags.showBudgetSummaryCards ? renderSpendingWatchlists(summary) : '') + (dashboardFeatureFlags.showDebtPreview ? renderReportsPreview(reportsSummary, { showSafeToSpendCard }) : '') + renderNextBestActions(nextActions) + (dashboardFeatureFlags.showDebugPanels ? renderDashboardDebugPanel({
++        featureFlags: dashboardFeatureFlags,
++        periodId: summary.period?.id || period.id,
++        dataHealthStatus,
++        reviewStats,
++        splitTotals: splitSummary?.totals || null,
++        renderedAt: new Date().toISOString(),
++      }) : '') + '</div>' +
++      '</section>' +
+       '</div>' +
+       (closeoutRecord && String(closeoutRecord.status || '').toLowerCase() === 'closed' ? '<div class="closeout-warning">Pay period closed.</div>' : '') +
+       (String(dataHealthStatus).toLowerCase() === 'warning' ? '<div class="dashboard-alert warning">Review flagged items before moving money.</div>' : '') +
+diff --git a/src/ui/expenses.js b/src/ui/expenses.js
+index fb6b10e..a777876 100644
+--- a/src/ui/expenses.js
++++ b/src/ui/expenses.js
+@@ -2,11 +2,12 @@
+  * Expenses page — category spending tracker with budget vs actual.
+  */
+ 
+-import { escapeHtml } from '../utils/dom.js';
+-import { formatCurrency, formatSignedCurrency, getPeriodLabel } from '../utils/formatters.js';
+-import { isDateInBudgetPeriod } from '../utils/budgetPeriods.js';
+-import { getTransactionRowsForPeriod } from '../api/transactionsApi.js';
++import { escapeHtml } from '../utils/dom.js';
++import { formatCurrency, formatSignedCurrency, getPeriodLabel } from '../utils/formatters.js';
++import { isDateInBudgetPeriod } from '../utils/budgetPeriods.js';
++import { getTransactionRowsForPeriod } from '../api/transactionsApi.js';
+ import { getMasterLists, getMasterListsCache } from '../api/masterListsApi.js';
++import { getSetting } from '../api/settingsApi.js';
+ import { fetchCloseoutRecord } from '../utils/closeoutClient.js';
+ import { getActivePeriod } from '../app/appState.js';
+ import { emitAppEvent } from '../app/events.js';
+@@ -35,8 +36,11 @@ function buildExpenseCategoryLookup(categories) {
+   return lookup;
+ }
+ 
+-function isExpenseTransaction(row, period) {
+-  return (row.type || '') === 'Expense' && !row.ignored && isDateInBudgetPeriod(row.date, period);
++function isExpenseTransaction(row, period, includePendingTransactions = false) {
++  if ((row.type || '') !== 'Expense') return false;
++  if (row.ignored) return false;
++  if (!includePendingTransactions && row.pending) return false;
++  return isDateInBudgetPeriod(row.date, period);
+ }
+ 
+ /**
+@@ -44,9 +48,12 @@ function isExpenseTransaction(row, period) {
+  * If the transaction has final splits, returns the split items.
+  * Otherwise, returns the parent transaction if it's an expense type.
+  */
+-function getExpenseItemsFromTransaction(tx, period) {
++function getExpenseItemsFromTransaction(tx, period, includePendingTransactions = false) {
++  const parentEligible = isExpenseTransaction(tx, period, includePendingTransactions);
++  if (!parentEligible) return [];
++
+   const hasFinalSplits = Array.isArray(tx.split_lines) && tx.split_lines.length > 0 && tx.split_is_final;
+-  
++
+   if (hasFinalSplits) {
+     // Return the split lines as expense items
+     return tx.split_lines.map((split) => ({
+@@ -61,7 +68,7 @@ function getExpenseItemsFromTransaction(tx, period) {
+   }
+   
+   // Return the parent transaction if it's an expense type and not ignored
+-  if ((tx.type || '') === 'Expense' && !tx.ignored && isDateInBudgetPeriod(tx.date, period)) {
++  if (parentEligible) {
+     return [{
+       date: tx.date,
+       amount: Number(tx.amount || 0),
+@@ -76,6 +83,29 @@ function getExpenseItemsFromTransaction(tx, period) {
+   return [];
+ }
+ 
++function getUncategorizedSplitReviewItems(tx, period, includePendingTransactions, activeCategoryLookup) {
++  if (!isExpenseTransaction(tx, period, includePendingTransactions)) return [];
++  if (!tx.split_is_final || !Array.isArray(tx.split_lines) || tx.split_lines.length === 0) return [];
++
++  return tx.split_lines
++    .map((split, index) => {
++      const category = String(split?.category || '').trim();
++      const key = normalizeExpenseCategoryKey(category);
++      const uncategorized = !key || key === 'uncategorized' || !activeCategoryLookup.has(key);
++      if (!uncategorized) return null;
++      return {
++        id: String(tx.id || '') + '::split::' + String(index),
++        reviewTransactionId: tx.id,
++        date: tx.date,
++        name: (tx.name || tx.merchant_name || 'Split expense') + ' (Split)',
++        amount: -Math.abs(Number(split?.amount || 0)),
++        category: category || '',
++        is_split: true,
++      };
++    })
++    .filter(Boolean);
++}
++
+ function isTransactionNeedsReview(row) {
+   return !(row.type || '').trim() && !row.reviewed && !row.ignored;
+ }
+@@ -119,22 +149,25 @@ export async function renderExpenses(container) {
+   try { closeoutRecord = await fetchCloseoutRecord(period.id); } catch { closeoutRecord = null; }
+   const ccSettings = await loadCommandCenterSettings().catch(() => null);
+   const expFeat = (key) => isFeatureEnabled(ccSettings, 'expenses', key);
++  const safeMoneySettings = await getSetting('safe_money_settings').catch(() => ({}));
++  const includePendingTransactions =
++    safeMoneySettings?.includePendingTransactions === true || safeMoneySettings?.include_pending_transactions === true;
+ 
+   const listsData = await getMasterLists(false);
+   if (!listsData.loaded) {
+     const msg = (listsData.error || '').includes('Backend not running')
+-      ? 'Backend not reachable through the local API proxy.'
++      ? 'Backend not reachable through the local API proxy.'
+       : 'Expense categories could not be loaded.';
+     body.innerHTML = '<section class="card"><div class="error-card">' + escapeHtml(msg) + '</div></section>';
+     return;
+   }
+ 
+-  let transactions;
+-  try {
+-    transactions = await getTransactionRowsForPeriod(period);
+-  } catch (err) {
++  let transactions;
++  try {
++    transactions = await getTransactionRowsForPeriod(period);
++  } catch (err) {
+     const msg = String(err.message || '').includes('Failed to fetch')
+-      ? 'Backend not reachable through the local API proxy.'
++      ? 'Backend not reachable through the local API proxy.'
+       : 'Transactions could not be loaded.';
+     body.innerHTML =
+       '<section class="card"><div class="error-card">' + escapeHtml(msg) +
+@@ -151,7 +184,7 @@ export async function renderExpenses(container) {
+   let totalActualSpent = 0;
+   
+   for (const tx of transactions) {
+-    const expenseItems = getExpenseItemsFromTransaction(tx, period);
++    const expenseItems = getExpenseItemsFromTransaction(tx, period, includePendingTransactions);
+     for (const item of expenseItems) {
+       const key = normalizeExpenseCategoryKey(item.category);
+       if (!categoryLookup.has(key)) continue;
+@@ -188,19 +221,27 @@ export async function renderExpenses(container) {
+   // For uncategorized, skip transactions that have final splits (they're now represented by split lines)
+   const expenseTransactions = transactions.filter((row) => {
+     const hasFinalSplits = Array.isArray(row.split_lines) && row.split_lines.length > 0 && row.split_is_final;
+-    return !hasFinalSplits && isExpenseTransaction(row, period);
++    return !hasFinalSplits && isExpenseTransaction(row, period, includePendingTransactions);
+   });
+ 
+-  const uncategorized = transactions
++  const uncategorizedBase = transactions
+     .filter((r) => isDateInBudgetPeriod(r.date, period) && !r.ignored)
++    .filter((r) => includePendingTransactions || !r.pending)
+     .filter((r) => !(Array.isArray(r.split_lines) && r.split_lines.length > 0 && r.split_is_final))
+     .filter((r) => isTransactionNeedsReview(r) || isTransactionUncategorizedExpense(r, categoryLookup))
+     .sort(sortByDateDesc);
++
++  const uncategorizedSplitItems = transactions
++    .flatMap((tx) => getUncategorizedSplitReviewItems(tx, period, includePendingTransactions, categoryLookup))
++    .sort(sortByDateDesc);
++
++  const uncategorized = [...uncategorizedBase, ...uncategorizedSplitItems];
+   const uniqueUncategorized = [];
+   const seen = new Set();
+   for (const r of uncategorized) {
+-    if (seen.has(r.id)) continue;
+-    seen.add(r.id);
++    const reviewKey = String(r.id || '') + '::' + String(r.reviewTransactionId || '');
++    if (seen.has(reviewKey)) continue;
++    seen.add(reviewKey);
+     uniqueUncategorized.push(r);
+   }
+ 
+@@ -211,7 +252,7 @@ export async function renderExpenses(container) {
+   // Also add split transactions as individual entries
+   for (const tx of transactions) {
+     const hasFinalSplits = Array.isArray(tx.split_lines) && tx.split_lines.length > 0 && tx.split_is_final;
+-    if (hasFinalSplits && isDateInBudgetPeriod(tx.date, period)) {
++    if (hasFinalSplits && isExpenseTransaction(tx, period, includePendingTransactions)) {
+       for (const split of tx.split_lines) {
+         expenseLogRows.push({
+           date: tx.date,
+@@ -285,7 +326,7 @@ export async function renderExpenses(container) {
+         '<div class="expense-review-item">' +
+         '<div><strong>' + escapeHtml(row.date || '-') + '</strong><br><span>' + escapeHtml(row.name || '-') + '</span></div>' +
+         '<div class="expense-review-amount">' + escapeHtml(formatSignedCurrency(row.amount)) + '</div>' +
+-        '<div class="inline-actions"><button class="button button-secondary button-sm" data-action="expense-review-transaction" data-id="' + escapeHtml(row.id) + '">Review</button></div>' +
++          '<div class="inline-actions"><button class="button button-secondary button-sm" data-action="expense-review-transaction" data-id="' + escapeHtml(row.reviewTransactionId || row.id) + '">Review</button></div>' +
+         '</div>'
+       ).join('') + '</div>'
+     : '<div class="expenses-review-list"><p class="empty-state">No uncategorized transactions in this period.</p></div>';
+diff --git a/src/ui/paycheckPlanner.js b/src/ui/paycheckPlanner.js
+index 82ba89b..8642820 100644
+--- a/src/ui/paycheckPlanner.js
++++ b/src/ui/paycheckPlanner.js
+@@ -5,14 +5,14 @@ import {
+ import { buildPayPeriodSummary } from '../utils/payPeriodSummary.js';
+ import { getDetectedPayrollIncome } from '../utils/payrollDetection.js';
+ import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
+-import {
+-  getBudgetBuckets,
+-  createBudgetBucket,
+-  updateBudgetBucket,
+-  deleteBudgetBucket,
+-  assignTransactionToBucket,
+-} from '../api/budgetBucketsApi.js';
+-import { getTransactionRowsForPeriod } from '../api/transactionsApi.js';
++import {
++  getBudgetBuckets,
++  createBudgetBucket,
++  updateBudgetBucket,
++  deleteBudgetBucket,
++  assignTransactionToBucket,
++} from '../api/budgetBucketsApi.js';
++import { getTransactionRowsForPeriod } from '../api/transactionsApi.js';
+ 
+ const BACKEND = '';
+ const BUDGET_SPLIT_GROUPS = ['Needs', 'Wants', 'Debts/Savings'];
+@@ -94,9 +94,9 @@ async function fetchMasterLists() {
+   };
+ }
+ 
+-async function fetchTransactions(period) {
+-  return await getTransactionRowsForPeriod(period);
+-}
++async function fetchTransactions(period) {
++  return await getTransactionRowsForPeriod(period);
++}
+ 
+ function splitInputId(groupName) {
+   return 'planner-split-' + String(groupName || '').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+@@ -302,7 +302,7 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
+       ccSettings,
+     ] = await Promise.all([
+       fetchMasterLists(),
+-      fetchTransactions(period),
++      fetchTransactions(period),
+       fetchBillStatus(period.id),
+       fetchSetting('budget_income_by_period'),
+       fetchSetting('auto_detected_income_by_period'),
+@@ -315,7 +315,11 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
+ 
+     const expenseList = masterLists.expenseList || [];
+     const recurringBillsList = masterLists.recurringBillsList || [];
+-    const detectedPayroll = getDetectedPayrollIncome(transactions, period);
++    const includePendingTransactions =
++      safeMoneySettings?.includePendingTransactions === true || safeMoneySettings?.include_pending_transactions === true;
++    const detectedPayroll = getDetectedPayrollIncome(transactions, period, {
++      includePendingTransactions,
++    });
+     const effectiveAutoIncomeMap = {
+       ...autoIncomeMap,
+     };
+@@ -340,7 +344,7 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
+     });
+     const safeMoney = summary.safeMoney || {
+       safetyBuffer: 0,
+-      includePendingTransactions: false,
++      includePendingTransactions,
+       pendingNote: 'Pending transactions excluded.',
+       safeToSpend: { amount: summary.safeToSpend, status: 'warning', blockers: [], warnings: [], breakdown: {} },
+       safeToTransfer: { amount: summary.safeToTransfer, status: 'warning', blockers: [], warnings: [], breakdown: {} },
+@@ -740,7 +744,13 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
+         button.disabled = true;
+         button.textContent = 'Detecting...';
+         const result = await fetchAutoDetectSummary(period);
+-        if (result.payroll?.detected) {
++        const payrollRows = Array.isArray(result.payroll?.transactions) ? result.payroll.transactions : [];
++        const hasNonPendingPayroll = payrollRows.some((row) => !row?.pending);
++        const detectedPayrollAllowed =
++          !!result.payroll?.detected &&
++          (includePendingTransactions || payrollRows.length === 0 || hasNonPendingPayroll);
++
++        if (detectedPayrollAllowed) {
+           await saveAutoDetectedIncome(period.id, result.payroll.amount);
+           if (!hasManualIncome) {
+             await clearBudgetIncome(period.id);
+@@ -751,6 +761,9 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
+             messageEl.className = 'settings-message success';
+             messageEl.textContent = 'Auto-detect complete: ' + result.bills.matched + ' auto-paid, ' + result.bills.possible + ' possible matches.';
+           }
++        } else if (result.payroll?.detected && !includePendingTransactions && messageEl) {
++          messageEl.className = 'settings-message error';
++          messageEl.textContent = 'Pending payroll was detected but pending transactions are excluded in Safe Money settings.';
+         } else if (messageEl) {
+           messageEl.className = 'settings-message error';
+           messageEl.textContent = 'No Cisco payroll found for this budget period.';
+diff --git a/src/ui/settings.js b/src/ui/settings.js
+index 1f1c391..e80ce54 100644
+--- a/src/ui/settings.js
++++ b/src/ui/settings.js
+@@ -263,6 +263,7 @@ export async function renderSettings(container) {
+         includePendingTransactions: !!document.getElementById('safe-money-pending')?.checked,
+       };
+       await updateSetting('safe_money_settings', value);
++      emitAppEvent('budget:safe-money-settings-updated');
+       if (messageEl) { messageEl.className = 'settings-message success'; messageEl.textContent = 'Safe Money settings saved.'; }
+     } catch (err) {
+       if (messageEl) { messageEl.className = 'settings-message error'; messageEl.textContent = err.message; }
+diff --git a/src/ui/transfers.js b/src/ui/transfers.js
+index 906dd32..f8fedb2 100644
+--- a/src/ui/transfers.js
++++ b/src/ui/transfers.js
+@@ -5,15 +5,16 @@ import {
+   formatCurrencyValue,
+ } from '../utils/budgetCalculations.js';
+ import { buildPayPeriodSummary } from '../utils/payPeriodSummary.js';
++import { loadBudgetContext } from '../utils/loadBudgetContext.js';
+ import { fetchCloseoutRecord } from '../utils/closeoutClient.js';
+-import {
+-  getTransferConfirmations,
+-  createTransferConfirmation,
+-  updateTransferConfirmation,
+-  deleteTransferConfirmation,
+-} from '../api/transferConfirmationApi.js';
+-import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
+-import { getTransactionRowsForPeriod } from '../api/transactionsApi.js';
++import {
++  getTransferConfirmations,
++  createTransferConfirmation,
++  updateTransferConfirmation,
++  deleteTransferConfirmation,
++} from '../api/transferConfirmationApi.js';
++import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
++import { getTransactionRowsForPeriod } from '../api/transactionsApi.js';
+ 
+ const BACKEND = '';
+ const DEFAULT_BUDGET_SPLIT = { Needs: 60, Wants: 20, 'Debts/Savings': 20 };
+@@ -49,9 +50,9 @@ async function fetchMasterLists() {
+   return await fetchJson('/api/master-lists');
+ }
+ 
+-async function fetchTransactions(period) {
+-  return await getTransactionRowsForPeriod(period);
+-}
++async function fetchTransactions(period) {
++  return await getTransactionRowsForPeriod(period);
++}
+ 
+ async function fetchBillStatus(periodId) {
+   try {
+@@ -94,10 +95,10 @@ function renderFormulaLines(lines) {
+     .join('');
+ }
+ 
+-function renderTargetRows(rows, confirmations, options = {}) {
+-  const showTransferMatching = options.showTransferMatching !== false;
+-  const showAdvancedTransferMath = options.showAdvancedTransferMath === true;
+-  const confirmationMap = {};
++function renderTargetRows(rows, confirmations, options = {}) {
++  const showTransferMatching = options.showTransferMatching !== false;
++  const showAdvancedTransferMath = options.showAdvancedTransferMath === true;
++  const confirmationMap = {};
+   confirmations.forEach(c => {
+     confirmationMap[c.targetName] = c;
+   });
+@@ -122,29 +123,29 @@ function renderTargetRows(rows, confirmations, options = {}) {
+       const confirmButtonId = 'confirm-' + escapeHtml(row.id);
+       const resetButtonId = 'reset-' + escapeHtml(row.id);
+ 
+-      const actionButtons = isConfirmed
+-        ? '<button class="button button-secondary button-sm" id="' + resetButtonId + '" data-action="reset-transfer-confirmation" data-target="' + escapeHtml(row.id) + '">Reset</button>'
+-        : '<button class="button button-primary button-sm" id="' + confirmButtonId + '" data-action="confirm-transfer" data-target="' + escapeHtml(row.id) + '" data-amount="' + escapeHtml(String(newPlannedTransfer)) + '">Confirm</button>';
+-
+-      return (
+-        '<tr>' +
+-        '<td>' + escapeHtml(row.target) + '</td>' +
+-        '<td>' + escapeHtml(formatCurrencyValue(row.plannedAmount)) + '</td>' +
+-        '<td>' + escapeHtml(formatCurrencyValue(displayAlreadyUsed)) + '</td>' +
+-        '<td>' + escapeHtml(formatCurrencyValue(newPlannedTransfer)) + '</td>' +
+-        '<td>' + statusBadge + '</td>' +
+-        (showTransferMatching ? '<td>' + actionButtons + '</td>' : '') +
+-        (showAdvancedTransferMath ? '<td><button class="button button-secondary button-sm" data-action="transfer-toggle-details" data-target="' + escapeHtml(row.id) + '">Details</button></td>' : '') +
+-        '</tr>' +
+-        (showAdvancedTransferMath
+-          ? '<tr class="transfer-detail-row" data-detail-row="' + escapeHtml(row.id) + '" hidden>' +
+-            '<td colspan="' + String(5 + (showTransferMatching ? 1 : 0) + 1) + '"><div class="transfer-detail-panel">' + renderFormulaLines(row.detailLines) + '</div></td>' +
+-            '</tr>'
+-          : '')
+-      );
+-    })
+-    .join('');
+-}
++      const actionButtons = isConfirmed
++        ? '<button class="button button-secondary button-sm" id="' + resetButtonId + '" data-action="reset-transfer-confirmation" data-target="' + escapeHtml(row.id) + '">Reset</button>'
++        : '<button class="button button-primary button-sm" id="' + confirmButtonId + '" data-action="confirm-transfer" data-target="' + escapeHtml(row.id) + '" data-amount="' + escapeHtml(String(newPlannedTransfer)) + '">Confirm</button>';
++
++      return (
++        '<tr>' +
++        '<td>' + escapeHtml(row.target) + '</td>' +
++        '<td>' + escapeHtml(formatCurrencyValue(row.plannedAmount)) + '</td>' +
++        '<td>' + escapeHtml(formatCurrencyValue(displayAlreadyUsed)) + '</td>' +
++        '<td>' + escapeHtml(formatCurrencyValue(newPlannedTransfer)) + '</td>' +
++        '<td>' + statusBadge + '</td>' +
++        (showTransferMatching ? '<td>' + actionButtons + '</td>' : '') +
++        (showAdvancedTransferMath ? '<td><button class="button button-secondary button-sm" data-action="transfer-toggle-details" data-target="' + escapeHtml(row.id) + '">Details</button></td>' : '') +
++        '</tr>' +
++        (showAdvancedTransferMath
++          ? '<tr class="transfer-detail-row" data-detail-row="' + escapeHtml(row.id) + '" hidden>' +
++            '<td colspan="' + String(5 + (showTransferMatching ? 1 : 0) + 1) + '"><div class="transfer-detail-panel">' + renderFormulaLines(row.detailLines) + '</div></td>' +
++            '</tr>'
++          : '')
++      );
++    })
++    .join('');
++}
+ 
+ function renderWantsTable(rows) {
+   if (!rows.length) {
+@@ -200,63 +201,38 @@ export async function renderTransfers(container, period, periodLabel) {
+   let masterListsError = '';
+   let transactionsError = '';
+ 
+-  let masterLists = { expenseList: [], recurringBillsList: [] };
++  let accounts = [];
++  let expenseList = [];
++  let recurringBillsList = [];
+   let transactions = [];
+   let billStatusRows = [];
+   let manualIncomeByPeriod = {};
+   let autoDetectedIncomeByPeriod = {};
+   let splitSettingValue = {};
++  let safeMoneySettings = {};
+ 
+   try {
+-    masterLists = await fetchMasterLists();
++    const budgetContext = await loadBudgetContext({ period });
++    accounts = Array.isArray(budgetContext?.accounts) ? budgetContext.accounts : [];
++    transactions = Array.isArray(budgetContext?.transactions) ? budgetContext.transactions : [];
++    expenseList = Array.isArray(budgetContext?.expenseList) ? budgetContext.expenseList : [];
++    recurringBillsList = Array.isArray(budgetContext?.recurringBillsList) ? budgetContext.recurringBillsList : [];
++    billStatusRows = Array.isArray(budgetContext?.recurringBillStatuses) ? budgetContext.recurringBillStatuses : [];
++    manualIncomeByPeriod = budgetContext?.settings?.manualIncomeByPeriod || budgetContext?.settings?.budget_income_by_period || {};
++    autoDetectedIncomeByPeriod = budgetContext?.settings?.autoDetectedIncomeByPeriod || budgetContext?.settings?.auto_detected_income_by_period || {};
++    splitSettingValue = budgetContext?.settings?.splitSettings || {};
++    safeMoneySettings = budgetContext?.settings?.safeMoneySettings || {};
+   } catch (err) {
+-    console.error('Transfers: failed loading master lists:', err);
+-    masterListsError = 'Master Lists could not be loaded.';
++    console.error('Transfers: failed loading budget context:', err);
+     backendDown = String(err.message || '').includes('Failed to fetch');
+-  }
+-
+-  try {
+-    transactions = await fetchTransactions(period);
+-  } catch (err) {
+-    console.error('Transfers: failed loading transactions:', err);
++    masterListsError = 'Master Lists could not be loaded.';
+     transactionsError = 'Transactions could not be loaded.';
+-    backendDown = backendDown || String(err.message || '').includes('Failed to fetch');
+   }
+ 
+-  try {
+-    billStatusRows = await fetchBillStatus(period.id);
+-  } catch (err) {
+-    console.error('Transfers: failed loading bill status:', err);
+-  }
+-
+-  try {
+-    manualIncomeByPeriod = await fetchSetting('budget_income_by_period');
+-  } catch (err) {
+-    console.error('Transfers: failed loading budget income setting:', err);
+-    backendDown = backendDown || String(err.message || '').includes('Failed to fetch');
+-  }
+-
+-  try {
+-    autoDetectedIncomeByPeriod = await fetchSetting('auto_detected_income_by_period');
+-  } catch (err) {
+-    console.error('Transfers: failed loading detected income setting:', err);
+-    backendDown = backendDown || String(err.message || '').includes('Failed to fetch');
+-  }
+-
+-  try {
+-    splitSettingValue = await fetchSetting('budget_split_settings');
+-  } catch (err) {
+-    console.error('Transfers: failed loading split settings:', err);
+-    backendDown = backendDown || String(err.message || '').includes('Failed to fetch');
+-  }
+-
+-  const expenseList = Array.isArray(masterLists.expenseList) ? masterLists.expenseList : [];
+-  const recurringBillsList = Array.isArray(masterLists.recurringBillsList) ? masterLists.recurringBillsList : [];
+-
+   const splitSettings = splitSettingValue?.default || DEFAULT_BUDGET_SPLIT;
+   const sharedSummary = buildPayPeriodSummary({
+     period,
+-    accounts: [],
++    accounts,
+     transactions,
+     expenseList,
+     recurringBillsList,
+@@ -267,6 +243,7 @@ export async function renderTransfers(container, period, periodLabel) {
+       manualIncomeByPeriod,
+       autoDetectedIncomeByPeriod,
+       splitSettings,
++      safeMoneySettings,
+     },
+   });
+   const safeMoney = sharedSummary.safeMoney || {
+@@ -437,19 +414,19 @@ export async function renderTransfers(container, period, periodLabel) {
+     trFeat('showDebtSavingsTransferPlan') ? debtSavingsRow : null,
+   ].filter(Boolean).map((row) => ({ ...row, status: getTransferStatus(row.id, row) }));
+ 
+-  const rows = rowsToShow;
+-  const showTransferMatching = trFeat('showTransferMatching');
+-  const showAdvancedTransferMath = trFeat('showAdvancedTransferMath');
+-
+-  const html =
+-
+-    '<section class="transfer-summary-grid">' +
+-    '<article class="card"><p>Total Planned Transfers</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.totalPlannedTransfers)) + '</h3></article>' +
+-    (trFeat('showJoshTaylorSplit') ? '<article class="card"><p>Josh Transfer</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.joshTransfer)) + '</h3></article>' : '') +
+-    (trFeat('showJoshTaylorSplit') ? '<article class="card"><p>Taylor Transfer</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.taylorTransfer)) + '</h3></article>' : '') +
+-    (trFeat('showDiscoverTransferPlan') ? '<article class="card"><p>Discover Transfer</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.discoverTransfer)) + '</h3></article>' : '') +
+-    (trFeat('showDebtSavingsTransferPlan') ? '<article class="card"><p>Debt/Savings Transfer</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.debtSavingsTransfer)) + '</h3></article>' : '') +
+-    '</section>' +
++  const rows = rowsToShow;
++  const showTransferMatching = trFeat('showTransferMatching');
++  const showAdvancedTransferMath = trFeat('showAdvancedTransferMath');
++
++  const html =
++
++    '<section class="transfer-summary-grid">' +
++    '<article class="card"><p>Total Planned Transfers</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.totalPlannedTransfers)) + '</h3></article>' +
++    (trFeat('showJoshTaylorSplit') ? '<article class="card"><p>Josh Transfer</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.joshTransfer)) + '</h3></article>' : '') +
++    (trFeat('showJoshTaylorSplit') ? '<article class="card"><p>Taylor Transfer</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.taylorTransfer)) + '</h3></article>' : '') +
++    (trFeat('showDiscoverTransferPlan') ? '<article class="card"><p>Discover Transfer</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.discoverTransfer)) + '</h3></article>' : '') +
++    (trFeat('showDebtSavingsTransferPlan') ? '<article class="card"><p>Debt/Savings Transfer</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.debtSavingsTransfer)) + '</h3></article>' : '') +
++    '</section>' +
+     '<section class="card planner-safe-money-card">' +
+     '<div class="card-header"><h3 class="card-title">Safe to Transfer</h3><p class="card-description">Shared safe transfer amount from the summary engine.</p></div>' +
+     '<div class="planner-safe-money-grid">' +
+@@ -468,8 +445,8 @@ export async function renderTransfers(container, period, periodLabel) {
+       : '') +
+     '<section class="card">' +
+     '<div class="table-wrap"><table class="table transfer-table">' +
+-    '<thead><tr><th>Target</th><th>Planned Transfer</th><th>Already Used</th><th>New Planned Transfer</th><th>Status</th>' + (showTransferMatching ? '<th>Action</th>' : '') + (showAdvancedTransferMath ? '<th>Details</th>' : '') + '</tr></thead>' +
+-    '<tbody>' + renderTargetRows(rows, transferConfirmations, { showTransferMatching, showAdvancedTransferMath }) + '</tbody>' +
++    '<thead><tr><th>Target</th><th>Planned Transfer</th><th>Already Used</th><th>New Planned Transfer</th><th>Status</th>' + (showTransferMatching ? '<th>Action</th>' : '') + (showAdvancedTransferMath ? '<th>Details</th>' : '') + '</tr></thead>' +
++    '<tbody>' + renderTargetRows(rows, transferConfirmations, { showTransferMatching, showAdvancedTransferMath }) + '</tbody>' +
+     '</table></div>' +
+     '<p class="muted-note">Debt/Savings transfer excludes bills paid directly from Bank of America.</p>' +
+     '</section>' +

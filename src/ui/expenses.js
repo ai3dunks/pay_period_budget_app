@@ -7,6 +7,7 @@ import { formatCurrency, formatSignedCurrency, getPeriodLabel } from '../utils/f
 import { isDateInBudgetPeriod } from '../utils/budgetPeriods.js';
 import { getTransactionRowsForPeriod } from '../api/transactionsApi.js';
 import { getMasterLists, getMasterListsCache } from '../api/masterListsApi.js';
+import { getSetting } from '../api/settingsApi.js';
 import { fetchCloseoutRecord } from '../utils/closeoutClient.js';
 import { getActivePeriod } from '../app/appState.js';
 import { emitAppEvent } from '../app/events.js';
@@ -35,8 +36,11 @@ function buildExpenseCategoryLookup(categories) {
   return lookup;
 }
 
-function isExpenseTransaction(row, period) {
-  return (row.type || '') === 'Expense' && !row.ignored && isDateInBudgetPeriod(row.date, period);
+function isExpenseTransaction(row, period, includePendingTransactions = false) {
+  if ((row.type || '') !== 'Expense') return false;
+  if (row.ignored) return false;
+  if (!includePendingTransactions && row.pending) return false;
+  return isDateInBudgetPeriod(row.date, period);
 }
 
 /**
@@ -44,9 +48,12 @@ function isExpenseTransaction(row, period) {
  * If the transaction has final splits, returns the split items.
  * Otherwise, returns the parent transaction if it's an expense type.
  */
-function getExpenseItemsFromTransaction(tx, period) {
+function getExpenseItemsFromTransaction(tx, period, includePendingTransactions = false) {
+  const parentEligible = isExpenseTransaction(tx, period, includePendingTransactions);
+  if (!parentEligible) return [];
+
   const hasFinalSplits = Array.isArray(tx.split_lines) && tx.split_lines.length > 0 && tx.split_is_final;
-  
+
   if (hasFinalSplits) {
     // Return the split lines as expense items
     return tx.split_lines.map((split) => ({
@@ -61,7 +68,7 @@ function getExpenseItemsFromTransaction(tx, period) {
   }
   
   // Return the parent transaction if it's an expense type and not ignored
-  if ((tx.type || '') === 'Expense' && !tx.ignored && isDateInBudgetPeriod(tx.date, period)) {
+  if (parentEligible) {
     return [{
       date: tx.date,
       amount: Number(tx.amount || 0),
@@ -74,6 +81,29 @@ function getExpenseItemsFromTransaction(tx, period) {
   }
   
   return [];
+}
+
+function getUncategorizedSplitReviewItems(tx, period, includePendingTransactions, activeCategoryLookup) {
+  if (!isExpenseTransaction(tx, period, includePendingTransactions)) return [];
+  if (!tx.split_is_final || !Array.isArray(tx.split_lines) || tx.split_lines.length === 0) return [];
+
+  return tx.split_lines
+    .map((split, index) => {
+      const category = String(split?.category || '').trim();
+      const key = normalizeExpenseCategoryKey(category);
+      const uncategorized = !key || key === 'uncategorized' || !activeCategoryLookup.has(key);
+      if (!uncategorized) return null;
+      return {
+        id: String(tx.id || '') + '::split::' + String(index),
+        reviewTransactionId: tx.id,
+        date: tx.date,
+        name: (tx.name || tx.merchant_name || 'Split expense') + ' (Split)',
+        amount: -Math.abs(Number(split?.amount || 0)),
+        category: category || '',
+        is_split: true,
+      };
+    })
+    .filter(Boolean);
 }
 
 function isTransactionNeedsReview(row) {
@@ -119,6 +149,9 @@ export async function renderExpenses(container) {
   try { closeoutRecord = await fetchCloseoutRecord(period.id); } catch { closeoutRecord = null; }
   const ccSettings = await loadCommandCenterSettings().catch(() => null);
   const expFeat = (key) => isFeatureEnabled(ccSettings, 'expenses', key);
+  const safeMoneySettings = await getSetting('safe_money_settings').catch(() => ({}));
+  const includePendingTransactions =
+    safeMoneySettings?.includePendingTransactions === true || safeMoneySettings?.include_pending_transactions === true;
 
   const listsData = await getMasterLists(false);
   if (!listsData.loaded) {
@@ -151,7 +184,7 @@ export async function renderExpenses(container) {
   let totalActualSpent = 0;
   
   for (const tx of transactions) {
-    const expenseItems = getExpenseItemsFromTransaction(tx, period);
+    const expenseItems = getExpenseItemsFromTransaction(tx, period, includePendingTransactions);
     for (const item of expenseItems) {
       const key = normalizeExpenseCategoryKey(item.category);
       if (!categoryLookup.has(key)) continue;
@@ -188,19 +221,27 @@ export async function renderExpenses(container) {
   // For uncategorized, skip transactions that have final splits (they're now represented by split lines)
   const expenseTransactions = transactions.filter((row) => {
     const hasFinalSplits = Array.isArray(row.split_lines) && row.split_lines.length > 0 && row.split_is_final;
-    return !hasFinalSplits && isExpenseTransaction(row, period);
+    return !hasFinalSplits && isExpenseTransaction(row, period, includePendingTransactions);
   });
 
-  const uncategorized = transactions
+  const uncategorizedBase = transactions
     .filter((r) => isDateInBudgetPeriod(r.date, period) && !r.ignored)
+    .filter((r) => includePendingTransactions || !r.pending)
     .filter((r) => !(Array.isArray(r.split_lines) && r.split_lines.length > 0 && r.split_is_final))
     .filter((r) => isTransactionNeedsReview(r) || isTransactionUncategorizedExpense(r, categoryLookup))
     .sort(sortByDateDesc);
+
+  const uncategorizedSplitItems = transactions
+    .flatMap((tx) => getUncategorizedSplitReviewItems(tx, period, includePendingTransactions, categoryLookup))
+    .sort(sortByDateDesc);
+
+  const uncategorized = [...uncategorizedBase, ...uncategorizedSplitItems];
   const uniqueUncategorized = [];
   const seen = new Set();
   for (const r of uncategorized) {
-    if (seen.has(r.id)) continue;
-    seen.add(r.id);
+    const reviewKey = String(r.id || '') + '::' + String(r.reviewTransactionId || '');
+    if (seen.has(reviewKey)) continue;
+    seen.add(reviewKey);
     uniqueUncategorized.push(r);
   }
 
@@ -211,7 +252,7 @@ export async function renderExpenses(container) {
   // Also add split transactions as individual entries
   for (const tx of transactions) {
     const hasFinalSplits = Array.isArray(tx.split_lines) && tx.split_lines.length > 0 && tx.split_is_final;
-    if (hasFinalSplits && isDateInBudgetPeriod(tx.date, period)) {
+    if (hasFinalSplits && isExpenseTransaction(tx, period, includePendingTransactions)) {
       for (const split of tx.split_lines) {
         expenseLogRows.push({
           date: tx.date,
@@ -285,7 +326,7 @@ export async function renderExpenses(container) {
         '<div class="expense-review-item">' +
         '<div><strong>' + escapeHtml(row.date || '-') + '</strong><br><span>' + escapeHtml(row.name || '-') + '</span></div>' +
         '<div class="expense-review-amount">' + escapeHtml(formatSignedCurrency(row.amount)) + '</div>' +
-        '<div class="inline-actions"><button class="button button-secondary button-sm" data-action="expense-review-transaction" data-id="' + escapeHtml(row.id) + '">Review</button></div>' +
+          '<div class="inline-actions"><button class="button button-secondary button-sm" data-action="expense-review-transaction" data-id="' + escapeHtml(row.reviewTransactionId || row.id) + '">Review</button></div>' +
         '</div>'
       ).join('') + '</div>'
     : '<div class="expenses-review-list"><p class="empty-state">No uncategorized transactions in this period.</p></div>';

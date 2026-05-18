@@ -146,7 +146,7 @@ function renderPrimaryCards(summary, visibility = {}) {
       '<article class="card command-card compact">' +
       '<div class="metric-card">' +
       '<div class="metric-label">' + escapeHtml(card.label) + '</div>' +
-      ((card.unavailable || card.status)
+      (card.unavailable
         ? '<div class="metric-value metric-value-unavailable">Unavailable</div>'
         : '<div class="metric-value ' + (card.tone ? 'text-' + card.tone : '') + '">' + escapeHtml(formatMoney(card.value)) + '</div>') +
       '<div class="metric-subtext">' + (card.subtext ? card.subtext.map((line) => '<div>' + escapeHtml(line) + '</div>').join('') : '') + '</div>' +
