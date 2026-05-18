@@ -251,6 +251,51 @@ router.get('/', (req, res) => {
   }
 });
 
+// GET /api/transactions/:id
+router.get('/:id', (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const row = db.prepare(
+      `SELECT
+        t.id,
+        t.plaid_transaction_id,
+        t.account_id,
+        t.plaid_account_id,
+        t.date,
+        t.name,
+        t.merchant_name,
+        t.amount,
+        t.pending,
+        t.pending_transaction_id,
+        t.type,
+        t.category,
+        t.reviewed,
+        t.ignored,
+        t.bucket_id,
+        t.bucket_name,
+        t.notes,
+        t.created_at,
+        t.updated_at,
+        a.name AS account_name,
+        a.institution_name,
+        a.mask
+      FROM transactions t
+      LEFT JOIN accounts a ON t.account_id = a.id
+      WHERE t.id = ?`
+    ).get(id);
+
+    if (!row) {
+      return res.status(404).json({ error: 'Transaction not found.' });
+    }
+
+    return res.json(attachSplitData([row])[0] || row);
+  } catch (err) {
+    console.error('Error fetching transaction:', err.message);
+    return res.status(500).json({ error: 'Failed to fetch transaction.' });
+  }
+});
+
 // GET /api/transactions/:id/splits
 router.get('/:id/splits', (req, res) => {
   const { id } = req.params;

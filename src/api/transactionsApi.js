@@ -56,6 +56,10 @@ export async function getTransactionRowsForPeriod(period, options = {}) {
   return allRows;
 }
 
+export function getTransactionById(id) {
+  return apiGet('/api/transactions/' + encodeURIComponent(id));
+}
+
 export function patchTransaction(id, payload) {
   return apiPatch('/api/transactions/' + encodeURIComponent(id), payload);
 }

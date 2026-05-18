@@ -3,7 +3,7 @@
  */
 
 import { escapeHtml } from '../utils/dom.js';
-import { getTransactions, patchTransaction, getTransactionSplits, saveTransactionSplits } from '../api/transactionsApi.js';
+import { getTransactions, getTransactionById, patchTransaction, getTransactionSplits, saveTransactionSplits } from '../api/transactionsApi.js';
 import { getMasterLists } from '../api/masterListsApi.js';
 import { applyRules } from '../api/rulesApi.js';
 import { getSetting } from '../api/settingsApi.js';
@@ -48,6 +48,7 @@ let _filters = {
 let _limit = 100;
 let _viewMode = 'period';
 let _reviewModalTxId = null;
+let _reviewModalRow = null;
 let _reviewDraft = null;
 let _txMessage = '';
 let _txMessageType = 'success';
@@ -68,6 +69,55 @@ const ACCOUNT_TAB_LABELS_SETTING_KEY = 'account_tab_labels';
 
 export function setPendingReviewTransactionId(id) {
   _pendingReviewTxId = id;
+}
+
+function _openReviewModalForTransaction(row) {
+  if (!row?.id) return false;
+  _reviewModalTxId = row.id;
+  _reviewModalRow = row;
+  _txMessage = '';
+  _reviewDraft = normalizeReviewDraft(row, {
+    type: row.type || 'Expense',
+    category: row.category || '',
+    notes: row.notes || '',
+    reviewed: !!row.reviewed,
+    ignored: !!row.ignored,
+  });
+  return true;
+}
+
+function _getReviewModalTransaction() {
+  if (!_reviewModalTxId) return null;
+  const pageRow = _rows.find((row) => row.id === _reviewModalTxId);
+  if (pageRow) return pageRow;
+  return _reviewModalRow?.id === _reviewModalTxId ? _reviewModalRow : null;
+}
+
+async function _openPendingReviewTransaction() {
+  const pendingId = _pendingReviewTxId;
+  if (!pendingId) return;
+
+  try {
+    const pageRow = _rows.find((row) => row.id === pendingId);
+    if (pageRow) {
+      _openReviewModalForTransaction(pageRow);
+      return;
+    }
+
+    const fetchedRow = await getTransactionById(pendingId);
+    if (fetchedRow?.id) {
+      _openReviewModalForTransaction(fetchedRow);
+      return;
+    }
+
+    _txMessage = 'Transaction could not be opened. It may be outside the current filters or no longer exists.';
+    _txMessageType = 'error';
+  } catch (_err) {
+    _txMessage = 'Transaction could not be opened. It may be outside the current filters or no longer exists.';
+    _txMessageType = 'error';
+  } finally {
+    _pendingReviewTxId = null;
+  }
 }
 
 export async function renderTransactions(container) {
@@ -95,18 +145,7 @@ export async function renderTransactions(container) {
   }
 
   if (_pendingReviewTxId) {
-    const pending = _rows.find((row) => row.id === _pendingReviewTxId);
-    if (pending) {
-      _reviewModalTxId = pending.id;
-      _reviewDraft = normalizeReviewDraft(pending, {
-        type: pending.type || 'Expense',
-        category: pending.category || '',
-        notes: pending.notes || '',
-        reviewed: !!pending.reviewed,
-        ignored: !!pending.ignored,
-      });
-    }
-    _pendingReviewTxId = null;
+    await _openPendingReviewTransaction();
   }
 
   _paint(body, period);
@@ -299,7 +338,7 @@ function _paint(body, period) {
     _renderPaginationControls();
 
   const tableHtml = _rows.length ? _renderTable() : '<p class="empty-state">No transactions found for this view.</p>';
-  const modalTx = _reviewModalTxId ? _rows.find((row) => row.id === _reviewModalTxId) : null;
+  const modalTx = _getReviewModalTransaction();
   const modalDraft = modalTx ? normalizeReviewDraft(modalTx, _reviewDraft || {}) : null;
   const modalHtml = modalTx && modalDraft ? renderReviewModalHtml(modalTx, modalDraft) : '';
   const splitModalTx = (txFeat('showSplitTransactionTools') && _splitModalTxId) ? _rows.find((row) => row.id === _splitModalTxId) : null;
@@ -537,14 +576,7 @@ function _attachDelegation(body) {
     if (action === 'review-transaction') {
       const row = _rows.find((item) => item.id === button.dataset.id);
       if (!row) return;
-      _reviewModalTxId = row.id;
-      _reviewDraft = normalizeReviewDraft(row, {
-        type: row.type || 'Expense',
-        category: row.category || '',
-        notes: row.notes || '',
-        reviewed: !!row.reviewed,
-        ignored: !!row.ignored,
-      });
+      _openReviewModalForTransaction(row);
       _repaint();
       return;
     }
@@ -555,6 +587,7 @@ function _attachDelegation(body) {
         if (event.target !== button) return;
       }
       _reviewModalTxId = null;
+      _reviewModalRow = null;
       _reviewDraft = null;
       _repaint();
       return;
@@ -572,7 +605,9 @@ function _attachDelegation(body) {
         const updatedRow = await patchTransaction(id, { type, category, notes, reviewed, ignored });
         const index = _rows.findIndex((item) => item.id === id);
         if (index !== -1) _rows[index] = { ..._rows[index], ...updatedRow };
+        if (_reviewModalRow?.id === id) _reviewModalRow = { ..._reviewModalRow, ...updatedRow };
         _reviewModalTxId = null;
+        _reviewModalRow = null;
         _reviewDraft = null;
         _txMessage = 'Transaction updated.';
         _txMessageType = 'success';
@@ -618,7 +653,7 @@ function _attachDelegation(body) {
       return;
     }
     if (action === 'create-rule-from-transaction') {
-      const row = _rows.find((item) => item.id === button.dataset.id);
+      const row = _rows.find((item) => item.id === button.dataset.id) || (_reviewModalRow?.id === button.dataset.id ? _reviewModalRow : null);
       if (!row) return;
       openRuleEditor({ source: 'transactions', transaction: row }, _reviewDraft);
       return;
@@ -701,7 +736,7 @@ function _attachDelegation(body) {
       return;
     }
     if (id === 'review-type') {
-      const row = _reviewModalTxId ? _rows.find((item) => item.id === _reviewModalTxId) : null;
+      const row = _getReviewModalTransaction();
       if (!row || !_reviewDraft) return;
       _reviewDraft = normalizeReviewDraft(row, { ..._reviewDraft, type: event.target.value, category: '' });
       _repaint();
