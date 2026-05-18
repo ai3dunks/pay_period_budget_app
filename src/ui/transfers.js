@@ -93,7 +93,9 @@ function renderFormulaLines(lines) {
     .join('');
 }
 
-function renderTargetRows(rows, confirmations) {
+function renderTargetRows(rows, confirmations, options = {}) {
+  const showTransferMatching = options.showTransferMatching !== false;
+  const showAdvancedTransferMath = options.showAdvancedTransferMath === true;
   const confirmationMap = {};
   confirmations.forEach(c => {
     confirmationMap[c.targetName] = c;
@@ -130,12 +132,14 @@ function renderTargetRows(rows, confirmations) {
         '<td>' + escapeHtml(formatCurrencyValue(displayAlreadyUsed)) + '</td>' +
         '<td>' + escapeHtml(formatCurrencyValue(newPlannedTransfer)) + '</td>' +
         '<td>' + statusBadge + '</td>' +
-        '<td>' + actionButtons + '</td>' +
-        '<td><button class="button button-secondary button-sm" data-action="transfer-toggle-details" data-target="' + escapeHtml(row.id) + '">Details</button></td>' +
+        (showTransferMatching ? '<td>' + actionButtons + '</td>' : '') +
+        (showAdvancedTransferMath ? '<td><button class="button button-secondary button-sm" data-action="transfer-toggle-details" data-target="' + escapeHtml(row.id) + '">Details</button></td>' : '') +
         '</tr>' +
-        '<tr class="transfer-detail-row" data-detail-row="' + escapeHtml(row.id) + '" hidden>' +
-        '<td colspan="7"><div class="transfer-detail-panel">' + renderFormulaLines(row.detailLines) + '</div></td>' +
-        '</tr>'
+        (showAdvancedTransferMath
+          ? '<tr class="transfer-detail-row" data-detail-row="' + escapeHtml(row.id) + '" hidden>' +
+            '<td colspan="' + String(5 + (showTransferMatching ? 1 : 0) + 1) + '"><div class="transfer-detail-panel">' + renderFormulaLines(row.detailLines) + '</div></td>' +
+            '</tr>'
+          : '')
       );
     })
     .join('');
@@ -433,15 +437,17 @@ export async function renderTransfers(container, period, periodLabel) {
   ].filter(Boolean).map((row) => ({ ...row, status: getTransferStatus(row.id, row) }));
 
   const rows = rowsToShow;
+  const showTransferMatching = trFeat('showTransferMatching');
+  const showAdvancedTransferMath = trFeat('showAdvancedTransferMath');
 
   const html =
 
     '<section class="transfer-summary-grid">' +
     '<article class="card"><p>Total Planned Transfers</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.totalPlannedTransfers)) + '</h3></article>' +
-    '<article class="card"><p>Josh Transfer</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.joshTransfer)) + '</h3></article>' +
-    '<article class="card"><p>Taylor Transfer</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.taylorTransfer)) + '</h3></article>' +
-    '<article class="card"><p>Discover Transfer</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.discoverTransfer)) + '</h3></article>' +
-    '<article class="card"><p>Debt/Savings Transfer</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.debtSavingsTransfer)) + '</h3></article>' +
+    (trFeat('showJoshTaylorSplit') ? '<article class="card"><p>Josh Transfer</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.joshTransfer)) + '</h3></article>' : '') +
+    (trFeat('showJoshTaylorSplit') ? '<article class="card"><p>Taylor Transfer</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.taylorTransfer)) + '</h3></article>' : '') +
+    (trFeat('showDiscoverTransferPlan') ? '<article class="card"><p>Discover Transfer</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.discoverTransfer)) + '</h3></article>' : '') +
+    (trFeat('showDebtSavingsTransferPlan') ? '<article class="card"><p>Debt/Savings Transfer</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.debtSavingsTransfer)) + '</h3></article>' : '') +
     '</section>' +
     '<section class="card planner-safe-money-card">' +
     '<div class="card-header"><h3 class="card-title">Safe to Transfer</h3><p class="card-description">Shared safe transfer amount from the summary engine.</p></div>' +
@@ -461,8 +467,8 @@ export async function renderTransfers(container, period, periodLabel) {
       : '') +
     '<section class="card">' +
     '<div class="table-wrap"><table class="table transfer-table">' +
-    '<thead><tr><th>Target</th><th>Planned Transfer</th><th>Already Used</th><th>New Planned Transfer</th><th>Status</th><th>Action</th><th>Details</th></tr></thead>' +
-    '<tbody>' + renderTargetRows(rows, transferConfirmations) + '</tbody>' +
+    '<thead><tr><th>Target</th><th>Planned Transfer</th><th>Already Used</th><th>New Planned Transfer</th><th>Status</th>' + (showTransferMatching ? '<th>Action</th>' : '') + (showAdvancedTransferMath ? '<th>Details</th>' : '') + '</tr></thead>' +
+    '<tbody>' + renderTargetRows(rows, transferConfirmations, { showTransferMatching, showAdvancedTransferMath }) + '</tbody>' +
     '</table></div>' +
     '<p class="muted-note">Debt/Savings transfer excludes bills paid directly from Bank of America.</p>' +
     '</section>' +

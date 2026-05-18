@@ -30,6 +30,7 @@ const IMPORTABLE_SETTINGS = new Set([
   'include_pending_transactions',
   'transaction_display_settings',
   'budget_split_settings',
+  'command_center',
   'command_center_settings',
 ]);
 

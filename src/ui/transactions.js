@@ -345,6 +345,7 @@ function _renderAccountTabs() {
 }
 
 function _renderTable() {
+  const showRawPlaidDetails = isFeatureEnabled(_txCcSettings, 'transactions', 'showRawPlaidDetails');
   const formatAmount = (amount) => {
     const absolute = Math.abs(Number(amount || 0)).toFixed(2);
     return Number(amount || 0) < 0 ? '-$' + absolute : '+$' + absolute;
@@ -364,7 +365,7 @@ function _renderTable() {
     const parentRow = (
       '<tr>' +
       '<td>' + escapeHtml(row.date || '') + '</td>' +
-      '<td>' + escapeHtml(row.account_name || '') + (row.mask ? ' (\u2022' + escapeHtml(row.mask) + ')' : '') + '<br><small>' + escapeHtml(row.institution_name || '') + '</small></td>' +
+      '<td>' + escapeHtml(row.account_name || '') + (row.mask ? ' (\u2022' + escapeHtml(row.mask) + ')' : '') + (showRawPlaidDetails ? '<br><small>' + escapeHtml(row.institution_name || '') + '</small>' : '') + '</td>' +
       '<td>' + escapeHtml(row.name || '') + (splitBadge ? '<br>' + splitBadge : '') + '</td>' +
       '<td>' + escapeHtml(row.merchant_name || '') + '</td>' +
       '<td class="' + (Number(row.amount || 0) < 0 ? 'amount-negative' : 'amount-positive') + '">' + escapeHtml(formatAmount(row.amount)) + '</td>' +

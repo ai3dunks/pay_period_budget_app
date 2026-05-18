@@ -143,7 +143,7 @@ export async function renderCashFlowForecast(container, period, periodLabel, opt
           '<div class="action-list">' + forecast.warnings.map((warning) => '<div class="dashboard-alert warning">' + escapeHtml(warning) + '</div>').join('') + '</div>' +
           '</section>'
         : '') +
-      renderAdjustmentsSection(forecast.adjustments, period) +
+      (cffFeat('showScenarioTools') ? renderAdjustmentsSection(forecast.adjustments, period) : '') +
       (cffFeat('showProjectedBalances') ?
         '<section class="card">' +
         '<div class="card-header"><h3 class="card-title">Pay-Period Forecast Table</h3></div>' +

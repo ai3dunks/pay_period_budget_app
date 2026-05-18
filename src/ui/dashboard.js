@@ -90,7 +90,9 @@ function renderCommandStrip() {
   );
 }
 
-function renderPrimaryCards(summary) {
+function renderPrimaryCards(summary, visibility = {}) {
+  const showPayPeriodCard = visibility.showPayPeriodCard !== false;
+  const showSafeToSpendCard = visibility.showSafeToSpendCard !== false;
   const safeSpend = summary.safeMoney?.safeToSpend || { amount: summary.safeToSpend, status: 'warning', blockers: [], warnings: [], breakdown: {} };
   const safeTransfer = summary.safeMoney?.safeToTransfer || { amount: summary.safeToTransfer, status: 'warning', blockers: [], warnings: [], breakdown: {} };
   const incomeSource = summary.income.source === 'No income found' ? 'Unavailable' : (summary.income.source || 'Unavailable');
@@ -105,24 +107,38 @@ function renderPrimaryCards(summary) {
   const expenseOverBudgetCount = expenseRows.filter((row) => row.overBudget).length;
 
   const cards = [
-    { label: 'Budget Income', value: summary.income.budgetIncome, tone: 'good', subtext: ['Source: ' + incomeSource, ...payrollLines] },
-    {
-      label: 'Safe to Spend',
-      value: safeSpend.amount,
-      tone: safeSpend.status === 'danger' ? 'danger' : safeSpend.status === 'warning' || safeSpend.status === 'tight' ? 'warning' : 'good',
-      unavailable: safeSpend.status === 'unavailable',
-      status: safeSpend,
-    },
-    {
-      label: 'Safe to Transfer',
-      value: safeTransfer.amount,
-      tone: safeTransfer.status === 'danger' ? 'danger' : safeTransfer.status === 'warning' || safeTransfer.status === 'tight' ? 'warning' : 'good',
-      unavailable: safeTransfer.status === 'unavailable',
-      status: safeTransfer,
-    },
-    { label: 'Bills Left', value: summary.recurringBills.unpaidTotal, tone: Number(summary.recurringBills.unpaidTotal || 0) > Number(summary.income.budgetIncome || 0) ? 'warning' : 'good', subtext: [summary.recurringBills.unpaidCount + ' unpaid bill' + (summary.recurringBills.unpaidCount === 1 ? '' : 's'), recurringNext ? 'Next unpaid: ' + recurringNext.billName + ' ' + (recurringNext.dueDateLabel || recurringNext.dueDate || '') : 'No unpaid bills left'] },
-    { label: 'Expense Remaining', value: summary.expenses.remaining, tone: Number(summary.expenses.remaining || 0) < 0 ? 'danger' : 'good', subtext: ['Actual ' + formatMoney(summary.expenses.actualTotal), 'Budget ' + formatMoney(summary.expenses.budgetTotal), expenseOverBudgetCount ? expenseOverBudgetCount + ' category' + (expenseOverBudgetCount === 1 ? '' : 'ies') + ' over budget' : 'No categories over budget'] },
+    ...(showPayPeriodCard
+      ? [
+          { label: 'Budget Income', value: summary.income.budgetIncome, tone: 'good', subtext: ['Source: ' + incomeSource, ...payrollLines] },
+        ]
+      : []),
+    ...(showSafeToSpendCard
+      ? [
+          {
+            label: 'Safe to Spend',
+            value: safeSpend.amount,
+            tone: safeSpend.status === 'danger' ? 'danger' : safeSpend.status === 'warning' || safeSpend.status === 'tight' ? 'warning' : 'good',
+            unavailable: safeSpend.status === 'unavailable',
+            status: safeSpend,
+          },
+          {
+            label: 'Safe to Transfer',
+            value: safeTransfer.amount,
+            tone: safeTransfer.status === 'danger' ? 'danger' : safeTransfer.status === 'warning' || safeTransfer.status === 'tight' ? 'warning' : 'good',
+            unavailable: safeTransfer.status === 'unavailable',
+            status: safeTransfer,
+          },
+        ]
+      : []),
+    ...(showPayPeriodCard
+      ? [
+          { label: 'Bills Left', value: summary.recurringBills.unpaidTotal, tone: Number(summary.recurringBills.unpaidTotal || 0) > Number(summary.income.budgetIncome || 0) ? 'warning' : 'good', subtext: [summary.recurringBills.unpaidCount + ' unpaid bill' + (summary.recurringBills.unpaidCount === 1 ? '' : 's'), recurringNext ? 'Next unpaid: ' + recurringNext.billName + ' ' + (recurringNext.dueDateLabel || recurringNext.dueDate || '') : 'No unpaid bills left'] },
+          { label: 'Expense Remaining', value: summary.expenses.remaining, tone: Number(summary.expenses.remaining || 0) < 0 ? 'danger' : 'good', subtext: ['Actual ' + formatMoney(summary.expenses.actualTotal), 'Budget ' + formatMoney(summary.expenses.budgetTotal), expenseOverBudgetCount ? expenseOverBudgetCount + ' category' + (expenseOverBudgetCount === 1 ? '' : 'ies') + ' over budget' : 'No categories over budget'] },
+        ]
+      : []),
   ];
+
+  if (!cards.length) return '';
 
   return (
     '<section class="dashboard-primary-grid">' +
@@ -399,7 +415,7 @@ function mapHealthIssueToAction(issue) {
   };
 }
 
-function buildNextActions({ summary, reviewStats, historySnapshots, loadError, closeoutRecord, period, healthReport }) {
+function buildNextActions({ summary, reviewStats, historySnapshots, loadError, closeoutRecord, period, healthReport, showSafeMoneyActions = true }) {
   const actions = [];
   const safeTransfer = summary.safeMoney?.safeToTransfer || { amount: summary.safeToTransfer, blockers: [], status: 'warning' };
   const today = new Date();
@@ -462,7 +478,7 @@ function buildNextActions({ summary, reviewStats, historySnapshots, loadError, c
     actions.push({ label: 'Close this pay period', reason: 'The current budget period ends soon.', buttonText: 'Open Closeout', destination: 'closeout' });
   }
 
-  if (Number(safeTransfer.amount || 0) < 0 || (safeTransfer.blockers || []).length) {
+  if (showSafeMoneyActions && (Number(safeTransfer.amount || 0) < 0 || (safeTransfer.blockers || []).length)) {
     actions.push({ label: 'Transfer shortfall', reason: (safeTransfer.blockers || []).length ? safeTransfer.blockers[0] : 'Safe to transfer is short by ' + formatMoney(Math.abs(safeTransfer.amount || 0)) + '.', buttonText: 'Go to Transfers', destination: 'transfers' });
   }
 
@@ -494,7 +510,7 @@ function renderNextBestActions(actions) {
   );
 }
 
-function renderReportsPreview(reportsSummary) {
+function renderReportsPreview(reportsSummary, options = {}) {
   const periods = Array.isArray(reportsSummary?.periods) ? reportsSummary.periods : [];
   const current = periods[0] || null;
   const previous = periods[1] || null;
@@ -525,10 +541,19 @@ function renderReportsPreview(reportsSummary) {
     '<div class="card-header"><h3 class="card-title">Reports Preview</h3><p class="card-description">Quick trend check vs prior period.</p></div>' +
     '<div class="action-list">' +
     line('Expenses', expensesDelta) +
-    line('Safe to Spend', safeDelta) +
+    (options.showSafeToSpendCard === false ? '' : line('Safe to Spend', safeDelta)) +
     line('Recurring bills', billsDelta) +
     '</div>' +
     '<div class="dashboard-secondary-actions"><button class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="reports">View Reports</button></div>' +
+    '</article>'
+  );
+}
+
+function renderDashboardDebugPanel(data) {
+  return (
+    '<article class="card command-card compact">' +
+    '<div class="card-header"><h3 class="card-title">Dashboard Debug Panel</h3><p class="card-description">Non-secret render diagnostics for Command Center validation.</p></div>' +
+    '<pre class="debug-panel">' + escapeHtml(JSON.stringify(data, null, 2)) + '</pre>' +
     '</article>'
   );
 }
@@ -622,7 +647,18 @@ export async function renderDashboard(container, options = {}) {
     const dataHealthLabel = healthReport ? formatHealthLabel(healthReport) : 'Data Health: ' + fallbackHealth;
     const lastSyncLabel = getLastSyncLabel(plaidStatus);
     const syncState = Array.isArray(plaidStatus?.items) && plaidStatus.items.length ? 'Connected' : 'No synced items';
-    const nextActions = buildNextActions({ summary, reviewStats, historySnapshots, closeoutRecord, period, healthReport });
+    const showPayPeriodCard = feat('showPayPeriodCard');
+    const showSafeToSpendCard = feat('showSafeToSpendCard');
+    const dashboardFeatureFlags = {
+      showPayPeriodCard,
+      showBudgetSummaryCards: feat('showBudgetSummaryCards'),
+      showSafeToSpendCard,
+      showTransferSummaryCard: feat('showTransferSummaryCard'),
+      showCashFlowPreview: feat('showCashFlowPreview'),
+      showDebtPreview: feat('showDebtPreview'),
+      showDebugPanels: feat('showDebugPanels'),
+    };
+    const nextActions = buildNextActions({ summary, reviewStats, historySnapshots, closeoutRecord, period, healthReport, showSafeMoneyActions: showSafeToSpendCard });
     const splitSummary = calculateFlexibleBudgetSplitEngine({
       budgetIncome: summary.income.budgetIncome,
       recurringBillsDue: summary.recurringBills?.dueRows || [],
@@ -641,15 +677,22 @@ export async function renderDashboard(container, options = {}) {
       '<div class="dashboard-page">' +
       renderTopBar({ period: summary.period, dataHealthLabel, dataHealthStatus, lastSyncLabel, syncState, closeoutStatus }) +
       renderCommandStrip() +
-      (feat('showPayPeriodCard') ? '<section class="dashboard-primary-grid">' + renderPrimaryCards(summary) + '</section>' : '') +
+      renderPrimaryCards(summary, { showPayPeriodCard, showSafeToSpendCard }) +
       '<section class="dashboard-secondary-grid">' +
       '<div class="dashboard-secondary-column">' +
-      (feat('showBudgetSummaryCards') ? renderBudgetSplitSummary(splitSummary) : '') +
-      (feat('showBudgetSummaryCards') ? renderEnvelopeSummary({ splitSummary, bucketSummary }) : '') +
+      (dashboardFeatureFlags.showBudgetSummaryCards ? renderBudgetSplitSummary(splitSummary) : '') +
+      (dashboardFeatureFlags.showBudgetSummaryCards ? renderEnvelopeSummary({ splitSummary, bucketSummary }) : '') +
       renderReviewQueue(reviewStats, hasRulesEngine) +
       renderBillsAttention(summary) +
       '</div>' +
-      '<div class="dashboard-secondary-column">' + (feat('showCashFlowPreview') ? renderCashFlowForecastCard(cashFlowForecast) : '') + (feat('showTransferSummaryCard') ? renderTransferActions(summary) : '') + (feat('showBudgetSummaryCards') ? renderSpendingWatchlists(summary) : '') + (feat('showDebtPreview') ? renderReportsPreview(reportsSummary) : '') + renderNextBestActions(nextActions) + '</div>' +
+      '<div class="dashboard-secondary-column">' + (dashboardFeatureFlags.showCashFlowPreview ? renderCashFlowForecastCard(cashFlowForecast) : '') + (dashboardFeatureFlags.showTransferSummaryCard ? renderTransferActions(summary) : '') + (dashboardFeatureFlags.showBudgetSummaryCards ? renderSpendingWatchlists(summary) : '') + (dashboardFeatureFlags.showDebtPreview ? renderReportsPreview(reportsSummary, { showSafeToSpendCard }) : '') + renderNextBestActions(nextActions) + (dashboardFeatureFlags.showDebugPanels ? renderDashboardDebugPanel({
+        featureFlags: dashboardFeatureFlags,
+        periodId: summary.period?.id || period.id,
+        dataHealthStatus,
+        reviewStats,
+        splitTotals: splitSummary?.totals || null,
+        renderedAt: new Date().toISOString(),
+      }) : '') + '</div>' +
       '</section>' +
       '</div>' +
       (closeoutRecord && String(closeoutRecord.status || '').toLowerCase() === 'closed' ? '<div class="closeout-warning">Pay period closed.</div>' : '') +
