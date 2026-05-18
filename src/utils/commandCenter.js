@@ -95,7 +95,6 @@ export const COMMAND_CENTER_DEFAULTS = {
     pageEnabled: true,
   },
   settings: {
-    pageEnabled: true,
     showPlaidConnections: true,
     showAccountTabNames: true,
     showRulesManager: true,
@@ -248,6 +247,9 @@ export function getCommandCenterSettings(stored) {
   for (const [page, defaults] of Object.entries(COMMAND_CENTER_DEFAULTS)) {
     const storedPage = (stored && typeof stored === 'object') ? (stored[page] || {}) : {};
     result[page] = { ...defaults, ...storedPage };
+    if (page === 'settings' && 'pageEnabled' in result[page]) {
+      delete result[page].pageEnabled;
+    }
   }
   return result;
 }
@@ -256,6 +258,7 @@ export function getCommandCenterSettings(stored) {
  * Check if an entire page is enabled. Defaults to true if missing.
  */
 export function isPageEnabled(ccSettings, pageKey) {
+  if (pageKey === 'settings') return true;
   if (!ccSettings || typeof ccSettings !== 'object') return true;
   const page = ccSettings[pageKey];
   if (!page || typeof page !== 'object') return true;
@@ -292,6 +295,9 @@ export async function loadCommandCenterSettings() {
  * Persist a single feature toggle change.
  */
 export async function updateCommandCenterFeature(currentSettings, pageKey, featureKey, value) {
+  if (pageKey === 'settings' && featureKey === 'pageEnabled') {
+    return getCommandCenterSettings(currentSettings || {});
+  }
   const next = {
     ...currentSettings,
     [pageKey]: {
@@ -299,8 +305,11 @@ export async function updateCommandCenterFeature(currentSettings, pageKey, featu
       [featureKey]: value,
     },
   };
+  if (pageKey === 'settings' && next.settings && 'pageEnabled' in next.settings) {
+    delete next.settings.pageEnabled;
+  }
   await updateSetting(COMMAND_CENTER_SETTING_KEY, next);
-  return next;
+  return getCommandCenterSettings(next);
 }
 
 /**
@@ -312,7 +321,7 @@ export async function resetCommandCenterPage(currentSettings, pageKey) {
     [pageKey]: { ...COMMAND_CENTER_DEFAULTS[pageKey] },
   };
   await updateSetting(COMMAND_CENTER_SETTING_KEY, next);
-  return next;
+  return getCommandCenterSettings(next);
 }
 
 /**
@@ -334,6 +343,9 @@ export async function applyCommandCenterPreset(currentSettings, presetKey) {
   for (const [page, overrides] of Object.entries(preset.overrides)) {
     next[page] = { ...(next[page] || COMMAND_CENTER_DEFAULTS[page] || {}), ...overrides };
   }
+  if (next.settings && 'pageEnabled' in next.settings) {
+    delete next.settings.pageEnabled;
+  }
   await updateSetting(COMMAND_CENTER_SETTING_KEY, next);
-  return next;
+  return getCommandCenterSettings(next);
 }

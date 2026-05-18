@@ -88,7 +88,7 @@ function _renderNav() {
   loadCommandCenterSettings().catch(() => null).then((ccSettings) => {
     const disabledTabs = new Set(
       Object.entries(TAB_PAGE_KEY)
-        .filter(([, pageKey]) => ccSettings && ccSettings[pageKey]?.pageEnabled === false)
+        .filter(([tabId, pageKey]) => tabId !== 'settings' && pageKey !== 'settings' && ccSettings && ccSettings[pageKey]?.pageEnabled === false)
         .map(([tabId]) => tabId)
     );
     renderNav(activeTab, (tabId) => {
@@ -121,7 +121,7 @@ async function _renderPage(tabId, content) {
 
   // Check if the page is disabled in the Command Center
   const pageKey = TAB_PAGE_KEY[tabId];
-  if (pageKey) {
+  if (pageKey && pageKey !== 'settings') {
     const ccSettings = await loadCommandCenterSettings().catch(() => null);
     if (!isPageEnabled(ccSettings, pageKey)) {
       const label = (PAGE_META[pageKey] || {}).label || tabId;

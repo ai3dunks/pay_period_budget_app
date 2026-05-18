@@ -767,6 +767,9 @@ function _renderCommandCenterSection(ccSettings) {
       '<button class="button button-ghost button-xs" data-action="cc-reset-page" data-page="' + escapeHtml(pageKey) + '">Reset</button>' +
       '</div>' +
       '</div>' +
+      (pageKey === 'settings'
+        ? '<p class="cc-page-desc" style="margin:0 0 0.75rem;">Settings is always available because it contains recovery controls.</p>'
+        : '') +
       '<div class="cc-toggles">' + togglesHtml + '</div>' +
       '</div>'
     );
