@@ -34,7 +34,6 @@ export const tabs = [
   { id: 'history', label: 'History' },
   { id: 'closeout', label: 'Closeout' },
   { id: 'master-lists', label: 'Master Lists' },
-  { id: 'test', label: 'Test' },
   { id: 'settings', label: 'Settings' },
 ];
 
