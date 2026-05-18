@@ -192,7 +192,8 @@ function renderBillMatchDetails(status) {
 }
 
 export async function renderRecurringBills(container, period, periodLabel) {
-  container.innerHTML = '';
+  const renderContainer = container?.closest?.('#page-content') || container;
+  renderContainer.innerHTML = '';
 
   try {
     const [
@@ -367,7 +368,7 @@ export async function renderRecurringBills(container, period, periodLabel) {
     }
 
     page.appendChild(billsSection);
-    container.appendChild(page);
+    renderContainer.appendChild(page);
 
     const existingPopup = document.getElementById('recurring-transaction-popup');
     if (existingPopup) existingPopup.remove();
@@ -391,10 +392,10 @@ export async function renderRecurringBills(container, period, periodLabel) {
       });
     }
 
-    document.getElementById('auto-detect-btn')?.addEventListener('click', async () => {
-      const noteDiv = document.getElementById('auto-detect-note');
-      const errorDiv = document.getElementById('auto-detect-error');
-      const button = document.getElementById('auto-detect-btn');
+    page.querySelector('#auto-detect-btn')?.addEventListener('click', async () => {
+      const noteDiv = page.querySelector('#auto-detect-note');
+      const errorDiv = page.querySelector('#auto-detect-error');
+      const button = page.querySelector('#auto-detect-btn');
 
       try {
         button.disabled = true;
@@ -413,8 +414,7 @@ export async function renderRecurringBills(container, period, periodLabel) {
           errorDiv.textContent = 'No Cisco payroll found for this period.';
         }
 
-        window.dispatchEvent(new CustomEvent('budget:recurring-bills-updated', { detail: { periodId: period.id } }));
-        await renderRecurringBills(container, period, periodLabel);
+        await renderRecurringBills(renderContainer, period, periodLabel);
       } catch (err) {
         console.error('Auto-detect failed:', err);
         errorDiv.textContent = 'Auto-detect failed: ' + err.message;
@@ -424,15 +424,14 @@ export async function renderRecurringBills(container, period, periodLabel) {
       }
     });
 
-    document.querySelectorAll('.bill-paid-toggle').forEach((checkbox) => {
+    page.querySelectorAll('.bill-paid-toggle').forEach((checkbox) => {
       checkbox.addEventListener('change', async () => {
         try {
           const billId = checkbox.getAttribute('data-bill-id');
           const isPaid = checkbox.checked;
           const paidDate = isPaid ? new Date().toISOString().slice(0, 10) : null;
           await saveBillStatus(period.id, billId, isPaid, paidDate);
-          window.dispatchEvent(new CustomEvent('budget:recurring-bills-updated', { detail: { periodId: period.id } }));
-          await renderRecurringBills(container, period, periodLabel);
+          await renderRecurringBills(renderContainer, period, periodLabel);
         } catch (err) {
           console.error('Failed to save bill status:', err);
           alert('Failed to update bill status');
@@ -441,13 +440,12 @@ export async function renderRecurringBills(container, period, periodLabel) {
       });
     });
 
-    document.querySelectorAll('.clear-override-btn').forEach((button) => {
+    page.querySelectorAll('.clear-override-btn').forEach((button) => {
       button.addEventListener('click', async () => {
         try {
           const billId = button.getAttribute('data-bill-id');
           await clearBillManualOverride(period.id, billId);
-          window.dispatchEvent(new CustomEvent('budget:recurring-bills-updated', { detail: { periodId: period.id } }));
-          await renderRecurringBills(container, period, periodLabel);
+          await renderRecurringBills(renderContainer, period, periodLabel);
         } catch (err) {
           console.error('Failed to clear manual override:', err);
           alert('Failed to clear manual override');
@@ -455,7 +453,7 @@ export async function renderRecurringBills(container, period, periodLabel) {
       });
     });
 
-    document.querySelectorAll('.transaction-popup-trigger').forEach((button) => {
+    page.querySelectorAll('.transaction-popup-trigger').forEach((button) => {
       button.addEventListener('click', () => {
         const billId = button.getAttribute('data-bill-id');
         openTransactionPopup(billId);
@@ -463,6 +461,6 @@ export async function renderRecurringBills(container, period, periodLabel) {
     });
   } catch (err) {
     console.error('Error rendering recurring bills:', err);
-    container.innerHTML = '<p class="error-message">Failed to load recurring bills</p>';
+    renderContainer.innerHTML = '<p class="error-message">Failed to load recurring bills</p>';
   }
 }

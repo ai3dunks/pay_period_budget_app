@@ -297,7 +297,6 @@ function _attachGlobalListeners() {
       const periodId = e.target.value;
       setSelectedPeriodId(periodId); // persists to localStorage internally
       window.dispatchEvent(new CustomEvent('budget:period-changed', { detail: { periodId } }));
-      renderActivePage();
       return;
     }
 
