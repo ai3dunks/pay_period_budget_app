@@ -23,6 +23,7 @@ import { renderDataHealth } from '../ui/dataHealth.js';
 import { renderReports } from '../ui/reports.js';
 import { renderDebtSnowball } from '../ui/debtSnowball.js';
 import { renderCashFlowForecast } from '../ui/cashFlowForecast.js';
+import { renderTest } from '../ui/test.js';
 import { syncTransactions } from '../api/plaidApi.js';
 import { API_BASE } from '../api/client.js';
 import { loadCommandCenterSettings, isPageEnabled, PAGE_META } from '../utils/commandCenter.js';
@@ -141,6 +142,7 @@ async function _renderPage(tabId, content) {
   };
 
   if (tabId === 'settings') { await renderSettings(content); return; }
+  if (tabId === 'test') { await renderTest(content); return; }
   if (tabId === 'transactions') { await renderTransactions(content); return; }
   if (tabId === 'master-lists') { await renderMasterLists(content); return; }
   if (tabId === 'expenses') { await renderExpenses(content); return; }
