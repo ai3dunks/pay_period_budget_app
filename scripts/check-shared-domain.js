@@ -11,6 +11,7 @@ import { getExpenseTransactionsForPeriod } from '../shared/expenses.js';
 import { calculateBudgetSplit, calculateWantsActuals } from '../shared/transfers.js';
 import { applyRulesToTransactions } from '../shared/transactionRules.js';
 import { isValidPeriod, isValidMoneyAmount, isValidTransactionType } from '../shared/validation.js';
+import { parseMatchWords } from '../shared/text.js';
 
 let passed = 0;
 let failed = 0;
@@ -116,6 +117,17 @@ assert('valid money amount', isValidMoneyAmount(100.5));
 assert('invalid money amount (NaN)', !isValidMoneyAmount('abc'));
 assert('valid transaction type', isValidTransactionType('Expense'));
 assert('invalid transaction type', !isValidTransactionType('Random'));
+
+// ── 7. parseMatchWords ───────────────────────────────────────────────────
+console.log('\n[7] parseMatchWords');
+const jsonWords = parseMatchWords('["capital one","cap one"]');
+assert('JSON array string keeps phrases', JSON.stringify(jsonWords) === JSON.stringify(['capital one', 'cap one']), JSON.stringify(jsonWords));
+
+const csvWords = parseMatchWords('capital one, cap one');
+assert('comma-separated string keeps phrases', JSON.stringify(csvWords) === JSON.stringify(['capital one', 'cap one']), JSON.stringify(csvWords));
+
+const arrayWords = parseMatchWords(['Capital One', 'cap one']);
+assert('array input normalizes and dedupes', JSON.stringify(arrayWords) === JSON.stringify(['capital one', 'cap one']), JSON.stringify(arrayWords));
 
 // ── Summary ───────────────────────────────────────────────────────────────
 console.log('\n' + '─'.repeat(50));

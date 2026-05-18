@@ -56,9 +56,32 @@ export function extractSearchTextFromTransaction(transaction) {
  */
 export function parseMatchWords(value) {
   if (!value) return [];
-  if (Array.isArray(value)) return value.map(normalizeText).filter(Boolean);
-  return String(value)
-    .split(/[\s,]+/)
-    .map(normalizeText)
-    .filter(Boolean);
+
+  const normalizeWords = (words) => {
+    const deduped = [];
+    const seen = new Set();
+    for (const word of words) {
+      const normalized = normalizeText(word);
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      deduped.push(normalized);
+    }
+    return deduped;
+  };
+
+  if (Array.isArray(value)) {
+    return normalizeWords(value);
+  }
+
+  const raw = String(value).trim();
+  if (!raw) return [];
+
+  if (raw.startsWith('[') && raw.endsWith(']')) {
+    const parsed = parseJsonSafe(raw, null);
+    if (Array.isArray(parsed)) {
+      return normalizeWords(parsed);
+    }
+  }
+
+  return normalizeWords(raw.split(','));
 }

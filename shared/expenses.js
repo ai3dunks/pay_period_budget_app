@@ -43,11 +43,70 @@ export function getExpenseTransactionsForPeriod(transactions = [], period, setti
 }
 
 /**
+ * Expand finalized expense splits into split-line transactions.
+ * Non-final splits keep the original parent transaction.
+ */
+export function expandExpenseTransactionsWithFinalSplits(transactions = []) {
+  const expanded = [];
+
+  for (const row of transactions || []) {
+    if (!row || row.ignored) continue;
+    if (normalizeText(row.type) !== 'expense') {
+      expanded.push(row);
+      continue;
+    }
+
+    const splitLines = Array.isArray(row.split_lines) ? row.split_lines : [];
+    const isFinalSplit = row.split_is_final === true;
+    if (!isFinalSplit || !splitLines.length) {
+      expanded.push(row);
+      continue;
+    }
+
+    const parentAmount = toNumber(row.amount, 0);
+    const signedDirection = parentAmount < 0 ? -1 : 1;
+    const normalizedLines = splitLines
+      .map((line) => {
+        const amount = Math.abs(toNumber(line?.amount, 0));
+        if (amount <= 0) return null;
+        return {
+          category: String(line?.category || '').trim(),
+          subcategory: String(line?.subcategory || '').trim(),
+          note: String(line?.note || '').trim(),
+          amount,
+        };
+      })
+      .filter(Boolean);
+
+    if (!normalizedLines.length) {
+      expanded.push(row);
+      continue;
+    }
+
+    for (const split of normalizedLines) {
+      expanded.push({
+        ...row,
+        category: split.category,
+        subcategory: split.subcategory,
+        split_note: split.note,
+        amount: signedDirection * split.amount,
+        split_parent_transaction_id: row.id,
+        split_is_line: true,
+      });
+    }
+  }
+
+  return expanded;
+}
+
+/**
  * Calculate actual expense spending, grouped by category.
  * Returns { totalActual, byCategory: Map<normalizedName, number> }.
  */
 export function calculateExpenseActuals(transactions = [], expenseList = [], period, settings = {}) {
-  const expenseTxns = getExpenseTransactionsForPeriod(transactions, period, settings);
+  const expenseTxns = expandExpenseTransactionsWithFinalSplits(
+    getExpenseTransactionsForPeriod(transactions, period, settings)
+  );
   const byCategory = new Map();
   for (const row of expenseTxns) {
     const key = normalizeText(row.category || 'uncategorized');
@@ -87,7 +146,9 @@ export function getUncategorizedExpenseTransactions(
   period,
   settings = {}
 ) {
-  const expenseTxns = getExpenseTransactionsForPeriod(transactions, period, settings);
+  const expenseTxns = expandExpenseTransactionsWithFinalSplits(
+    getExpenseTransactionsForPeriod(transactions, period, settings)
+  );
   const knownCategories = new Set(
     (expenseList || []).filter((item) => item?.active).map((item) => normalizeText(item.name))
   );

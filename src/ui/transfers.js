@@ -108,9 +108,11 @@ function renderTargetRows(rows, confirmations, options = {}) {
       const statusClass = getTransferStatusClass(row.status);
       const confirmation = confirmationMap[row.target] || confirmationMap[row.id] || null;
       const isConfirmed = confirmation && confirmation.status === 'confirmed';
-      
-      // New Planned Transfer always reflects Planned Transfer - Already Used.
-      const newPlannedTransfer = Math.max(0, row.plannedAmount - row.alreadyUsed);
+
+      const transferNeededAmount = Number(row.transferNeeded || 0);
+      const displayTransferAmount = isConfirmed
+        ? Number(confirmation.confirmedTransferAmount ?? transferNeededAmount)
+        : transferNeededAmount;
       
       const displayAlreadyUsed = isConfirmed 
         ? confirmation.alreadyUsedAtConfirmation
@@ -125,14 +127,14 @@ function renderTargetRows(rows, confirmations, options = {}) {
 
       const actionButtons = isConfirmed
         ? '<button class="button button-secondary button-sm" id="' + resetButtonId + '" data-action="reset-transfer-confirmation" data-target="' + escapeHtml(row.id) + '">Reset</button>'
-        : '<button class="button button-primary button-sm" id="' + confirmButtonId + '" data-action="confirm-transfer" data-target="' + escapeHtml(row.id) + '" data-amount="' + escapeHtml(String(newPlannedTransfer)) + '">Confirm</button>';
+        : '<button class="button button-primary button-sm" id="' + confirmButtonId + '" data-action="confirm-transfer" data-target="' + escapeHtml(row.id) + '" data-amount="' + escapeHtml(String(transferNeededAmount)) + '">Confirm</button>';
 
       return (
         '<tr>' +
         '<td>' + escapeHtml(row.target) + '</td>' +
         '<td>' + escapeHtml(formatCurrencyValue(row.plannedAmount)) + '</td>' +
         '<td>' + escapeHtml(formatCurrencyValue(displayAlreadyUsed)) + '</td>' +
-        '<td>' + escapeHtml(formatCurrencyValue(newPlannedTransfer)) + '</td>' +
+        '<td>' + escapeHtml(formatCurrencyValue(displayTransferAmount)) + '</td>' +
         '<td>' + statusBadge + '</td>' +
         (showTransferMatching ? '<td>' + actionButtons + '</td>' : '') +
         (showAdvancedTransferMath ? '<td><button class="button button-secondary button-sm" data-action="transfer-toggle-details" data-target="' + escapeHtml(row.id) + '">Details</button></td>' : '') +
@@ -512,11 +514,7 @@ export async function renderTransfers(container, period, periodLabel) {
         return;
       }
 
-      const confirmedAmount = targetId === 'debt-savings'
-        ? (Number(targetRow.alreadyUsed || 0) > 0
-          ? amount
-          : Math.max(0, Number(targetRow.plannedAmount || 0)))
-        : amount;
+      const confirmedAmount = Math.max(0, Number(targetRow.transferNeeded || amount || 0));
 
       try {
         // Check if confirmation already exists

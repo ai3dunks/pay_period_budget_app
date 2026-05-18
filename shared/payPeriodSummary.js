@@ -8,7 +8,7 @@
 
 import { isDateInBudgetPeriod, parseLocalDate } from './budgetPeriods.js';
 import { calculateBudgetSplit, calculateTransferPlan, calculateWantsActuals } from './transfers.js';
-import { calculateExpenseBudget } from './expenses.js';
+import { calculateExpenseBudget, expandExpenseTransactionsWithFinalSplits } from './expenses.js';
 import { calculateRecurringBillsDue } from './recurringBills.js';
 import { getDetectedPayrollIncome, isCiscoPayrollTransaction } from './payrollDetection.js';
 import { calculateSafeToSpend, calculateSafeToTransfer } from './safeMoney.js';
@@ -154,59 +154,6 @@ function getPeriodTransactions(period, transactions = [], includePendingTransact
     if (!includePendingTransactions && row.pending) return false;
     return isDateInBudgetPeriod(row.date, period);
   });
-}
-
-function getFinalSplitLines(transaction) {
-  const splitLines = Array.isArray(transaction?.split_lines) ? transaction.split_lines : [];
-  if (!splitLines.length) return [];
-  if (transaction?.split_is_final !== true) return [];
-  return splitLines
-    .map((line) => {
-      const category = String(line?.category || '').trim();
-      const amount = toNumber(line?.amount, 0);
-      if (!category || amount <= 0) return null;
-      return {
-        category,
-        subcategory: String(line?.subcategory || '').trim(),
-        note: String(line?.note || '').trim(),
-        amount,
-      };
-    })
-    .filter(Boolean);
-}
-
-function expandExpenseTransactionsWithSplits(transactions = []) {
-  const expanded = [];
-
-  for (const transaction of transactions) {
-    if (normalizeText(transaction?.type) !== 'expense') {
-      expanded.push(transaction);
-      continue;
-    }
-
-    const splitLines = getFinalSplitLines(transaction);
-    if (!splitLines.length) {
-      expanded.push(transaction);
-      continue;
-    }
-
-    const parentAmount = toNumber(transaction.amount, 0);
-    const signedDirection = parentAmount < 0 ? -1 : 1;
-
-    for (const split of splitLines) {
-      expanded.push({
-        ...transaction,
-        category: split.category,
-        subcategory: split.subcategory,
-        split_note: split.note,
-        amount: signedDirection * Math.abs(split.amount),
-        split_parent_transaction_id: transaction.id,
-        split_is_line: true,
-      });
-    }
-  }
-
-  return expanded;
 }
 
 function isInSelectedPeriod(dateValue, period) {
@@ -391,7 +338,7 @@ export function buildPayPeriodSummary({
   // ── Expenses ───────────────────────────────────────────────────────────────
   const expenseBudget = calculateExpenseBudget(expenseList);
   const expenseRowsByCategory = new Map();
-  const expenseTransactions = expandExpenseTransactionsWithSplits(
+  const expenseTransactions = expandExpenseTransactionsWithFinalSplits(
     periodTransactions.filter((row) => normalizeText(row.type) === 'expense')
   );
   for (const row of expenseTransactions) {
