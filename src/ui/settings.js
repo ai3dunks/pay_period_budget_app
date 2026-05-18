@@ -245,6 +245,11 @@ export async function renderSettings(container) {
       '<div id="safe-money-message" class="settings-message" aria-live="polite"></div>' +
       '</section>' : '') +
 
+    '<section class="card settings-section" id="command-center-recovery-section">' +
+    '<div class="card-header"><h3 class="card-title">Command Center Recovery</h3><p class="card-description">Restore defaults if Command Center visibility was changed by saved settings.</p></div>' +
+    '<div class="settings-actions"><button class="button button-secondary" data-action="cc-reset-all">Reset Command Center Defaults</button></div>' +
+    '</section>' +
+
     (settingsFeat('showCommandCenter') ? _renderCommandCenterSection(_ccSettings) : '') +
 
     ruleEditorHtml;
@@ -313,6 +318,14 @@ export async function renderSettings(container) {
     const pageKey = btn.dataset.page;
     const featureKey = btn.dataset.feature;
     if (!pageKey || !featureKey) return;
+    if (pageKey === 'settings' && featureKey === 'showCommandCenter') {
+      btn.checked = true;
+      _ccMessage = 'Command Center cannot be hidden because it controls feature recovery.';
+      _ccMessageType = 'success';
+      const contentEl = document.getElementById('page-content');
+      if (contentEl) await renderSettings(contentEl);
+      return;
+    }
     try {
       _ccSettings = await updateCommandCenterFeature(_ccSettings || {}, pageKey, featureKey, btn.checked);
       _ccMessage = 'Saved.';
@@ -724,11 +737,14 @@ function _renderCommandCenterSection(ccSettings) {
         const isEnabled = lockOn
           ? true
           : (featureKey in pageStored ? !!pageStored[featureKey] : !!pageDefaults[featureKey]);
+        const descriptionText = lockOn
+          ? 'Command Center cannot be hidden because it controls feature recovery.'
+          : meta.description;
         return (
           '<label class="cc-toggle-row">' +
           '<input type="checkbox" data-action="cc-toggle" data-page="' + escapeHtml(pageKey) + '" data-feature="' + escapeHtml(featureKey) + '"' + (isEnabled ? ' checked' : '') + (pageIsEnabled && !lockOn ? '' : ' disabled') + '>' +
           '<span class="cc-toggle-label">' + escapeHtml(meta.label) + '</span>' +
-          '<span class="cc-toggle-desc">' + escapeHtml(lockOn ? (meta.description + ' (Always enabled)') : meta.description) + '</span>' +
+          '<span class="cc-toggle-desc">' + escapeHtml(descriptionText) + '</span>' +
           '</label>'
         );
       }).join('');
