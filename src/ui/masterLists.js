@@ -22,6 +22,7 @@ let _uiState = {
   message: '',
   error: '',
 };
+let _delegationBody = null;
 
 // ── Public render ────────────────────────────────────────────────────────────
 export async function renderMasterLists(container) {
@@ -38,7 +39,7 @@ export async function renderMasterLists(container) {
   }
 
   _paint(body, data);
-  _attachDelegation(body, container, data);
+  _attachDelegation(body, container);
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────────
@@ -199,11 +200,16 @@ async function _repaint(container) {
   const data = await getMasterLists(false);
   const body = document.getElementById('page-body');
   if (body) _paint(body, data);
-  _attachDelegation(body, container, data);
 }
 
-function _attachDelegation(body, container, initialData) {
+function _attachDelegation(body, container) {
   if (!body) return;
+  if (_delegationBody === body) return;
+  _delegationBody = body;
+  if (import.meta.env?.DEV) {
+    console.debug('[master-lists] delegation attached');
+  }
+
   body.addEventListener('click', async (e) => {
     const btn = e.target.closest('[data-action]');
     if (!btn) return;
@@ -213,7 +219,6 @@ function _attachDelegation(body, container, initialData) {
       _uiState = { ..._uiState, activeTab: btn.dataset.listType, editingId: null, editingType: '', error: '', message: '' };
       const data = await getMasterLists(false);
       _paint(body, data);
-      _attachDelegation(body, container, data);
       return;
     }
 
@@ -237,14 +242,12 @@ function _attachDelegation(body, container, initialData) {
       _uiState = { ..._uiState, editingId: btn.dataset.id, editingType: 'expense' };
       const data = await getMasterLists(false);
       _paint(body, data);
-      _attachDelegation(body, container, data);
       return;
     }
     if (action === 'master-expense-cancel') {
       _uiState = { ..._uiState, editingId: null, editingType: '' };
       const data = await getMasterLists(false);
       _paint(body, data);
-      _attachDelegation(body, container, data);
       return;
     }
     if (action === 'master-expense-save') {
@@ -294,14 +297,12 @@ function _attachDelegation(body, container, initialData) {
       _uiState = { ..._uiState, editingId: btn.dataset.id, editingType: 'recurring-bills' };
       const data = await getMasterLists(false);
       _paint(body, data);
-      _attachDelegation(body, container, data);
       return;
     }
     if (action === 'master-recurring-cancel') {
       _uiState = { ..._uiState, editingId: null, editingType: '' };
       const data = await getMasterLists(false);
       _paint(body, data);
-      _attachDelegation(body, container, data);
       return;
     }
     if (action === 'master-recurring-save') {
