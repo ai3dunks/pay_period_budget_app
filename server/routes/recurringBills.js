@@ -2,7 +2,12 @@ import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import db from '../db.js';
 import { getDetectedPayrollIncome, isCiscoPayrollTransaction } from '../../shared/payrollDetection.js';
-import { getBillDueDateForPeriod, scoreRecurringBillPaymentMatch } from '../../shared/recurringBills.js';
+import {
+  getBillDueDateForPeriod,
+  scoreRecurringBillPaymentMatch,
+  AUTO_PAID_MATCH_SCORE,
+  POSSIBLE_MATCH_SCORE,
+} from '../../shared/recurringBills.js';
 import { normalizeText, parseMatchWords, parseJsonSafe } from '../../shared/text.js';
 
 const router = Router();
@@ -199,14 +204,14 @@ router.post('/auto-detect', (req, res) => {
           tx,
           dueDate
         );
-        if (result.score >= 50 && result.score > bestScore) {
+        if (result.score >= POSSIBLE_MATCH_SCORE && result.score > bestScore) {
           bestScore = result.score;
           bestMethod = (result.reasons || []).join(',') || 'possible_match';
           bestMatch = { tx, score: result.score };
         }
       }
 
-      if (bestMatch && bestMatch.score >= 75) {
+      if (bestMatch && bestMatch.score >= AUTO_PAID_MATCH_SCORE) {
         const statusId = existing?.id || randomUUID();
         upsertStatus({
           id: statusId,
@@ -240,7 +245,7 @@ router.post('/auto-detect', (req, res) => {
           autoPaid: true
         });
         matchedTransactionIds.add(bestMatch.tx.id);
-      } else if (bestMatch && bestMatch.score >= 50) {
+      } else if (bestMatch && bestMatch.score >= POSSIBLE_MATCH_SCORE) {
         const statusId = existing?.id || randomUUID();
         upsertStatus({
           id: statusId,
@@ -351,7 +356,7 @@ router.get('/status', (req, res) => {
       let matchStatus = 'Unpaid';
       if (row.manually_overridden) matchStatus = 'Manual';
       else if (row.auto_paid && row.paid) matchStatus = 'Auto-paid';
-      else if ((row.match_score || 0) >= 50 && (row.match_score || 0) < 75) matchStatus = 'Possible match';
+      else if ((row.match_score || 0) >= POSSIBLE_MATCH_SCORE && (row.match_score || 0) < AUTO_PAID_MATCH_SCORE) matchStatus = 'Possible match';
       else if (row.match_method === 'autopay_not_found') matchStatus = 'Autopay not found';
 
       return {

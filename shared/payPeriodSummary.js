@@ -94,7 +94,19 @@ function isBankOfAmericaCheckingAccount(account) {
 function isBillPaidFromBoa(value) {
   const paidFrom = String(value || '').toLowerCase().trim();
   if (!paidFrom) return false;
-  return BOA_NAME_PATTERNS.some((p) => paidFrom.includes(p));
+  const condensed = paidFrom.replace(/[^a-z0-9]/g, '');
+  const aliases = [
+    'bank of america',
+    'bank of america checking',
+    'boa',
+    'boa checking',
+    'bofa',
+    'checking boa',
+  ];
+
+  // TODO: Replace paidFrom text heuristics with stable account-id mapping from recurring bill settings.
+  return BOA_NAME_PATTERNS.some((p) => paidFrom.includes(p))
+    || aliases.some((alias) => paidFrom.includes(alias) || condensed.includes(alias.replace(/[^a-z0-9]/g, '')));
 }
 
 function findBoaAccount(accounts = []) {

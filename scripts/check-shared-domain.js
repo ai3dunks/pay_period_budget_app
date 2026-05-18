@@ -7,11 +7,12 @@
 
 import { generateBudgetPeriods, getCurrentBudgetPeriod, isDateInBudgetPeriod } from '../shared/budgetPeriods.js';
 import { getDetectedPayrollIncome, isCiscoPayrollTransaction } from '../shared/payrollDetection.js';
-import { getExpenseTransactionsForPeriod } from '../shared/expenses.js';
-import { calculateBudgetSplit, calculateWantsActuals } from '../shared/transfers.js';
+import { getExpenseTransactionsForPeriod, calculateExpenseActuals } from '../shared/expenses.js';
+import { calculateBudgetSplit, calculateWantsActuals, calculateTransferPlan } from '../shared/transfers.js';
 import { applyRulesToTransactions } from '../shared/transactionRules.js';
 import { isValidPeriod, isValidMoneyAmount, isValidTransactionType } from '../shared/validation.js';
 import { parseMatchWords } from '../shared/text.js';
+import { buildPayPeriodSummary } from '../shared/payPeriodSummary.js';
 
 let passed = 0;
 let failed = 0;
@@ -67,6 +68,14 @@ const multiPayrollTxns = [
 ];
 const multiDetected = getDetectedPayrollIncome(multiPayrollTxns, testPeriod, {});
 assert('multiple payrolls returns warning', !!multiDetected.warning, JSON.stringify(multiDetected));
+
+const pendingPayrollOnly = [
+  { id: 'pp1', date: '2026-05-10', name: 'CISCO SYSTEMS DES:PAYROLL', amount: 3800, type: 'Income', category: 'Paycheck', pending: true, ignored: false },
+];
+const pendingExcludedByDefault = getDetectedPayrollIncome(pendingPayrollOnly, testPeriod, {});
+assert('pending payroll excluded by default', pendingExcludedByDefault.detected === false, JSON.stringify(pendingExcludedByDefault));
+const pendingIncluded = getDetectedPayrollIncome(pendingPayrollOnly, testPeriod, { includePendingTransactions: true });
+assert('pending payroll included when enabled', pendingIncluded.detected === true, JSON.stringify(pendingIncluded));
 
 // ── 3. Expense transactions (pending excluded by default) ─────────────────
 console.log('\n[3] getExpenseTransactionsForPeriod — pending excluded');
@@ -128,6 +137,102 @@ assert('comma-separated string keeps phrases', JSON.stringify(csvWords) === JSON
 
 const arrayWords = parseMatchWords(['Capital One', 'cap one']);
 assert('array input normalizes and dedupes', JSON.stringify(arrayWords) === JSON.stringify(['capital one', 'cap one']), JSON.stringify(arrayWords));
+
+// ── 8. Safe Money math — unpaid/paid bills + BOA reserve ─────────────────
+console.log('\n[8] safe money math');
+const summaryPeriod = { id: 'p-safe', startDate: '2026-05-08', displayEndDate: '2026-05-21', exclusiveEndDate: '2026-05-22' };
+const boaAccount = {
+  id: 'acct-boa',
+  name: 'Bank of America Checking',
+  institutionName: 'Bank of America',
+  subtype: 'checking',
+  balanceCurrent: 1000,
+};
+const baseSummaryInput = {
+  period: summaryPeriod,
+  accounts: [boaAccount],
+  transactions: [],
+  expenseList: [],
+  settings: {
+    budget_income_by_period: { 'p-safe': 1000 },
+    auto_detected_income_by_period: {},
+    splitSettings: { Needs: 60, Wants: 20, 'Debts/Savings': 20 },
+    safeMoneySettings: { safetyBuffer: 0, includePendingTransactions: false },
+  },
+};
+
+const recurringBillsBoa = [
+  { id: 'bill-boa', name: 'Credit Card', active: true, dueDay: 10, amount: 200, category: 'Needs', paidFrom: 'Checking - BOA' },
+];
+const summaryUnpaidBoa = buildPayPeriodSummary({
+  ...baseSummaryInput,
+  recurringBillsList: recurringBillsBoa,
+  recurringBillStatuses: [],
+});
+const summaryPaidBoa = buildPayPeriodSummary({
+  ...baseSummaryInput,
+  recurringBillsList: recurringBillsBoa,
+  recurringBillStatuses: [{ recurringBillId: 'bill-boa', paid: true }],
+});
+assert('unpaid bills reduce Safe to Spend', summaryUnpaidBoa.safeToSpend < summaryPaidBoa.safeToSpend, JSON.stringify({ unpaid: summaryUnpaidBoa.safeToSpend, paid: summaryPaidBoa.safeToSpend }));
+assert('paid bills removed from unpaid total', summaryUnpaidBoa.recurringBills.unpaidTotal === 200 && summaryPaidBoa.recurringBills.unpaidTotal === 0, JSON.stringify({ unpaid: summaryUnpaidBoa.recurringBills.unpaidTotal, paid: summaryPaidBoa.recurringBills.unpaidTotal }));
+
+const recurringBillsNonBoa = [
+  { id: 'bill-non', name: 'Credit Card', active: true, dueDay: 10, amount: 200, category: 'Needs', paidFrom: 'Wells Checking' },
+];
+const summaryUnpaidNonBoa = buildPayPeriodSummary({
+  ...baseSummaryInput,
+  recurringBillsList: recurringBillsNonBoa,
+  recurringBillStatuses: [],
+});
+assert('BOA unpaid bills reduce Safe to Transfer reserve', summaryUnpaidBoa.safeToTransfer < summaryUnpaidNonBoa.safeToTransfer, JSON.stringify({ boa: summaryUnpaidBoa.safeToTransfer, nonBoa: summaryUnpaidNonBoa.safeToTransfer }));
+
+// ── 9. Final split expense expansion math ─────────────────────────────────
+console.log('\n[9] final split expansion');
+const splitExpensePeriod = { id: 'p-exp', startDate: '2026-05-08', exclusiveEndDate: '2026-05-22' };
+const splitExpenseTxns = [
+  {
+    id: 'parent-1',
+    date: '2026-05-10',
+    type: 'Expense',
+    category: 'Dining',
+    amount: -100,
+    ignored: false,
+    pending: false,
+    split_is_final: true,
+    split_lines: [
+      { category: 'Groceries', amount: 60 },
+      { category: 'Gas', amount: 40 },
+    ],
+  },
+];
+const splitActuals = calculateExpenseActuals(splitExpenseTxns, [], splitExpensePeriod, { includePendingTransactions: true });
+assert('final split parent does not double count', splitActuals.totalActual === 100, JSON.stringify({ totalActual: splitActuals.totalActual }));
+assert('final split lines count by line category', splitActuals.byCategory.get('groceries') === 60 && splitActuals.byCategory.get('gas') === 40, JSON.stringify({ groceries: splitActuals.byCategory.get('groceries'), gas: splitActuals.byCategory.get('gas') }));
+
+// ── 10. Transfer needed output math ───────────────────────────────────────
+console.log('\n[10] transfer needed outputs');
+const splitSummaryForPlan = calculateBudgetSplit({
+  budgetIncome: 1000,
+  recurringBillsDue: [
+    { category: 'Needs', amount: 300 },
+    { category: 'Wants', amount: 50 },
+    { category: 'Debts/Savings', amount: 100 },
+  ],
+  splitSettings: { Needs: 60, Wants: 20, 'Debts/Savings': 20 },
+});
+const transferPlan = calculateTransferPlan({
+  splitSummary: splitSummaryForPlan,
+  expenseBudget: { totalExpenseBudget: 400 },
+  wantsActuals: {
+    joshActual: 20,
+    taylorActual: 50,
+  },
+});
+assert('Josh transfer expected', transferPlan.joshTransfer === 55, JSON.stringify(transferPlan));
+assert('Taylor transfer expected', transferPlan.taylorTransfer === 25, JSON.stringify(transferPlan));
+assert('Discover transfer expected', transferPlan.discoverTransfer === 400, JSON.stringify(transferPlan));
+assert('Debt/Savings transfer expected', transferPlan.debtSavingsTransfer === 0, JSON.stringify(transferPlan));
 
 // ── Summary ───────────────────────────────────────────────────────────────
 console.log('\n' + '─'.repeat(50));

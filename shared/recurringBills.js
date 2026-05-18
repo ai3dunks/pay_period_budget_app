@@ -8,6 +8,9 @@ import { isDateInBudgetPeriod } from './budgetPeriods.js';
 import { normalizeText, parseMatchWords } from './text.js';
 import { toNumber } from './money.js';
 
+export const AUTO_PAID_MATCH_SCORE = 75;
+export const POSSIBLE_MATCH_SCORE = 50;
+
 /**
  * Build a map of { recurringBillId → statusRow } from an array of status rows.
  */
@@ -186,7 +189,11 @@ export function findRecurringBillMatches(billsDue = [], transactions = [], optio
     }
 
     const matchStatus =
-      bestScore >= 70 ? 'Matched' : bestScore >= 40 ? 'Possible match' : 'No match';
+      bestScore >= AUTO_PAID_MATCH_SCORE
+        ? 'Matched'
+        : bestScore >= POSSIBLE_MATCH_SCORE
+          ? 'Possible match'
+          : 'No match';
 
     results.push({
       bill,

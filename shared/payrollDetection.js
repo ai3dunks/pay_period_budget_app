@@ -95,7 +95,7 @@ function comparePayrollTransactionsDesc(a, b) {
  *             ignoredDuplicatePayrollTransactions, selectedTransactionId, warning }}
  */
 export function getDetectedPayrollIncome(transactions = [], period, options = {}) {
-  const includePendingTransactions = options?.includePendingTransactions !== false;
+  const includePendingTransactions = options?.includePendingTransactions === true;
   const payrollTransactions = getPayrollTransactionsForPeriod(transactions, period)
     .filter((transaction) => includePendingTransactions || !transaction?.pending)
     .slice()

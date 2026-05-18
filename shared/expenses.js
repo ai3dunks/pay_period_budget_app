@@ -51,10 +51,7 @@ export function expandExpenseTransactionsWithFinalSplits(transactions = []) {
 
   for (const row of transactions || []) {
     if (!row || row.ignored) continue;
-    if (normalizeText(row.type) !== 'expense') {
-      expanded.push(row);
-      continue;
-    }
+    if (normalizeText(row.type) !== 'expense') continue;
 
     const splitLines = Array.isArray(row.split_lines) ? row.split_lines : [];
     const isFinalSplit = row.split_is_final === true;
