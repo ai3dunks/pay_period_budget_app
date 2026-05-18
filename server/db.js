@@ -48,6 +48,25 @@ function ensureDebtSavingsTransferColumn(columnName, columnSql) {
 ensureDebtSavingsTransferColumn('source_target_id', 'source_target_id TEXT DEFAULT ""');
 ensureDebtSavingsTransferColumn('source_target_name', 'source_target_name TEXT DEFAULT ""');
 
+function ensureExpenseFundingRecordsTable() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS expense_funding_records (
+      id TEXT PRIMARY KEY,
+      budget_period_id TEXT NOT NULL,
+      start_date TEXT DEFAULT '',
+      end_date TEXT DEFAULT '',
+      source_target_id TEXT DEFAULT '',
+      source_target_name TEXT DEFAULT '',
+      confirmed_amount REAL DEFAULT 0,
+      status TEXT DEFAULT 'transfer_confirmed',
+      confirmed_at TEXT,
+      notes TEXT DEFAULT '',
+      created_at TEXT,
+      updated_at TEXT
+    )
+  `);
+}
+
 function tableExists(tableName) {
   const row = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
@@ -141,6 +160,10 @@ function ensureIndexes() {
   ensureIndex(
     'idx_debt_savings_transfer_period_target',
     'CREATE INDEX IF NOT EXISTS idx_debt_savings_transfer_period_target ON debt_savings_transfer_confirmations(budget_period_id, source_target_id)'
+  );
+  ensureIndex(
+    'idx_expense_funding_period_target',
+    'CREATE INDEX IF NOT EXISTS idx_expense_funding_period_target ON expense_funding_records(budget_period_id, source_target_id)'
   );
 
   if (tableExists('transfer_checklist_items')) {
@@ -420,6 +443,7 @@ function ensureTransactionRulesTable() {
 }
 
 ensureLegacyMasterListItemsTable();
+ensureExpenseFundingRecordsTable();
 ensureExpenseListTable();
 ensureRecurringBillsListTable();
 ensureRecurringBillsListColumns();

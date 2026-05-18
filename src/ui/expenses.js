@@ -12,6 +12,7 @@ import { fetchCloseoutRecord } from '../utils/closeoutClient.js';
 import { getActivePeriod } from '../app/appState.js';
 import { emitAppEvent } from '../app/events.js';
 import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
+import { getExpenseFundingRecords } from '../api/expenseFundingApi.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -128,6 +129,14 @@ function renderBadge(label, className) {
   return '<span class="' + className + '">' + escapeHtml(label) + '</span>';
 }
 
+function renderSummaryCard(item) {
+  const toneClass = item.tone ? ' stat-card--' + item.tone : '';
+  return (
+    '<article class="card stat-card' + toneClass + '"><p class="card-description">' + escapeHtml(item.label) +
+    '</p><h3 class="card-title">' + escapeHtml(item.value) + '</h3></article>'
+  );
+}
+
 // ── Public render ────────────────────────────────────────────────────────────
 
 export async function renderExpenses(container) {
@@ -175,6 +184,18 @@ export async function renderExpenses(container) {
     return;
   }
 
+  let expenseFundingRecords = [];
+  let expenseFundingError = '';
+  try {
+    const fundingData = await getExpenseFundingRecords(period.id);
+    expenseFundingRecords = Array.isArray(fundingData?.records) ? fundingData.records : [];
+  } catch (err) {
+    console.error('Expenses: failed loading expense funding records:', err);
+    expenseFundingError = String(err.message || '').includes('Failed to fetch')
+      ? 'Backend not reachable through the local API proxy.'
+      : 'Expense funding records could not be loaded.';
+  }
+
   const cache = getMasterListsCache();
   const expenseCategories = getActiveExpenseCategories(cache);
   const categoryLookup = buildExpenseCategoryLookup(expenseCategories);
@@ -217,6 +238,10 @@ export async function renderExpenses(container) {
   const totalExpenseBudget = expenseCategories.reduce((sum, c) => sum + c.budgetAmount, 0);
   const totalRemaining = totalExpenseBudget - totalActualSpent;
   const categoriesOverBudget = categoryRows.filter((r) => r.budgetAmount > 0 && r.actualSpent > r.budgetAmount).length;
+  const activeExpenseFundingRecords = expenseFundingRecords.filter((record) => !['cancelled', 'not_needed'].includes(String(record.status || '').toLowerCase()));
+  const confirmedFundingTotal = activeExpenseFundingRecords.reduce((sum, record) => sum + Number(record.confirmedAmount || 0), 0);
+  const fundingRemaining = confirmedFundingTotal - totalActualSpent;
+  const fundingShortfall = Math.max(0, totalExpenseBudget - confirmedFundingTotal);
 
   // For uncategorized, skip transactions that have final splits (they're now represented by split lines)
   const expenseTransactions = transactions.filter((row) => {
@@ -272,13 +297,39 @@ export async function renderExpenses(container) {
 
   const summaryHtml = [
     { label: 'Total Expense Budget', value: formatCurrency(totalExpenseBudget) },
+    {
+      label: 'Available Funding',
+      value: formatCurrency(confirmedFundingTotal),
+      tone: confirmedFundingTotal >= totalExpenseBudget && totalExpenseBudget > 0 ? 'good' : '',
+    },
+    { label: 'Budget Remaining', value: formatSignedCurrency(totalRemaining) },
+    { label: 'Funding Remaining', value: formatSignedCurrency(fundingRemaining) },
     { label: 'Actual Spent', value: formatCurrency(totalActualSpent) },
-    { label: 'Remaining', value: formatSignedCurrency(totalRemaining) },
+    {
+      label: 'Funding Shortfall',
+      value: fundingShortfall > 0 ? formatCurrency(fundingShortfall) : '$0.00',
+      tone: fundingShortfall > 0 ? 'warning' : 'good',
+    },
     { label: 'Categories Over Budget', value: String(categoriesOverBudget) },
-  ].map((item) =>
-    '<article class="card stat-card"><p class="card-description">' + escapeHtml(item.label) +
-    '</p><h3 class="card-title">' + escapeHtml(item.value) + '</h3></article>'
-  ).join('');
+  ].map(renderSummaryCard).join('');
+
+  const fundingRecordRowsHtml = activeExpenseFundingRecords.length
+    ? '<div class="expense-funding-records">' + activeExpenseFundingRecords.map((record) => (
+        '<div class="expense-funding-record">' +
+        '<strong>' + escapeHtml(record.sourceTargetName || record.sourceTargetId || 'Expense funding') + '</strong>' +
+        '<span>' + escapeHtml(formatCurrency(record.confirmedAmount || 0)) + '</span>' +
+        '<span>' + escapeHtml(record.status || 'transfer_confirmed') + '</span>' +
+        '</div>'
+      )).join('') + '</div>'
+    : '<p class="empty-state">No confirmed expense funding records for this period.</p>';
+
+  const expenseFundingHtml =
+    '<section class="card expense-funding-card">' +
+    '<div class="card-header"><h3 class="card-title">Expense Funding Records</h3>' +
+    '<p class="card-description">' + escapeHtml(activeExpenseFundingRecords.length + ' confirmed funding record' + (activeExpenseFundingRecords.length === 1 ? '' : 's')) + '</p></div>' +
+    (expenseFundingError ? '<div class="warning-message">' + escapeHtml(expenseFundingError) + '</div>' : '') +
+    fundingRecordRowsHtml +
+    '</section>';
 
   const categoryRowsHtml = sortedCategoryRows.length
     ? '<div class="expense-category-widgets">' + sortedCategoryRows.map((cat) => {
@@ -353,6 +404,7 @@ export async function renderExpenses(container) {
   body.innerHTML =
     (closeoutRecord?.status === 'closed' ? '<div class="closeout-warning">This period is closed. Reopen it before changing closeout-related data.</div>' : '') +
     '<div class="summary-grid">' + summaryHtml + '</div>' +
+    expenseFundingHtml +
     '<section class="expenses-layout">' +
     (expFeat('showExpenseCategoryManager') ?
       '<div class="expenses-category-panel">' +

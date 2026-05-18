@@ -18,6 +18,7 @@ import budgetBucketsRoutes from './routes/budgetBuckets.js';
 import debtSnowballRoutes from './routes/debtSnowball.js';
 import transfersRoutes from './routes/transfers.js';
 import cashFlowRoutes from './routes/cashFlow.js';
+import expenseFundingRoutes from './routes/expenseFunding.js';
 
 const app = express();
 const PORT = parseInt(process.env.BACKEND_PORT || '8787', 10);
@@ -45,6 +46,7 @@ app.use('/api/budget-buckets', budgetBucketsRoutes);
 app.use('/api/debt-snowball', debtSnowballRoutes);
 app.use('/api/transfers', transfersRoutes);
 app.use('/api/cash-flow', cashFlowRoutes);
+app.use('/api/expense-funding', expenseFundingRoutes);
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true });

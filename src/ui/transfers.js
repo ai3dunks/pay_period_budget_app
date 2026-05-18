@@ -19,6 +19,12 @@ import {
   updateSnowballTransfer,
   deleteSnowballTransfer,
 } from '../api/snowballTransferApi.js';
+import {
+  getExpenseFundingRecords,
+  createExpenseFundingRecord,
+  updateExpenseFundingRecord,
+  deleteExpenseFundingRecord,
+} from '../api/expenseFundingApi.js';
 import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
 import { getTransactionRowsForPeriod } from '../api/transactionsApi.js';
 import { getTransferTargetsConfig } from '../utils/transferTargets.js';
@@ -356,6 +362,7 @@ export async function renderTransfers(container, period, periodLabel) {
 
   let transferConfirmations = [];
   let debtSavingsFundingRecords = [];
+  let expenseFundingRecords = [];
   try {
     const confData = await getTransferConfirmations(period.id);
     transferConfirmations = Array.isArray(confData?.confirmations) ? confData.confirmations : [];
@@ -368,6 +375,13 @@ export async function renderTransfers(container, period, periodLabel) {
     debtSavingsFundingRecords = Array.isArray(fundingData?.transfers) ? fundingData.transfers : [];
   } catch (err) {
     console.error('Transfers: failed loading debt/savings funding records:', err);
+  }
+
+  try {
+    const fundingData = await getExpenseFundingRecords(period.id);
+    expenseFundingRecords = Array.isArray(fundingData?.records) ? fundingData.records : [];
+  } catch (err) {
+    console.error('Transfers: failed loading expense funding records:', err);
   }
 
   const transferTargets = getTransferTargetsConfig(transferTargetsSetting);
@@ -520,7 +534,8 @@ export async function renderTransfers(container, period, periodLabel) {
       try {
         // Check if confirmation already exists
         const existing = transferConfirmations.find(c => c.targetName === targetNameMap[targetId]);
-        const existingFundingRecord = debtSavingsFundingRecords.find((row) => row.sourceTargetId === targetId || row.sourceTargetName === targetRow.target);
+        const existingDebtSavingsFundingRecord = debtSavingsFundingRecords.find((row) => row.sourceTargetId === targetId || row.sourceTargetName === targetRow.target);
+        const existingExpenseFundingRecord = expenseFundingRecords.find((row) => row.sourceTargetId === targetId || row.sourceTargetName === targetRow.target);
         
         if (existing) {
           // Update existing confirmation
@@ -555,10 +570,28 @@ export async function renderTransfers(container, period, periodLabel) {
             status: 'transfer_confirmed',
             notes: 'Confirmed from Transfers page for period: ' + periodLabel,
           };
-          if (existingFundingRecord?.id) {
-            await updateSnowballTransfer(existingFundingRecord.id, fundingPayload);
+          if (existingDebtSavingsFundingRecord?.id) {
+            await updateSnowballTransfer(existingDebtSavingsFundingRecord.id, fundingPayload);
           } else {
             await createSnowballTransfer(fundingPayload);
+          }
+        }
+
+        if (targetRow.confirmAction === 'create_expense_funding') {
+          const fundingPayload = {
+            budgetPeriodId: period.id,
+            startDate: period.startDate || '',
+            endDate: period.displayEndDate || period.exclusiveEndDate || '',
+            sourceTargetId: targetRow.id,
+            sourceTargetName: targetRow.target,
+            confirmedAmount,
+            status: 'transfer_confirmed',
+            notes: 'Confirmed from Transfers page for period: ' + periodLabel,
+          };
+          if (existingExpenseFundingRecord?.id) {
+            await updateExpenseFundingRecord(existingExpenseFundingRecord.id, fundingPayload);
+          } else {
+            await createExpenseFundingRecord(fundingPayload);
           }
         }
 
@@ -575,7 +608,8 @@ export async function renderTransfers(container, period, periodLabel) {
       const targetName = targetNameMap[targetId];
       const existing = transferConfirmations.find(c => c.targetName === targetName);
       const targetRow = rows.find((row) => row.id === targetId);
-      const existingFundingRecord = debtSavingsFundingRecords.find((row) => row.sourceTargetId === targetId || row.sourceTargetName === targetName);
+      const existingDebtSavingsFundingRecord = debtSavingsFundingRecords.find((row) => row.sourceTargetId === targetId || row.sourceTargetName === targetName);
+      const existingExpenseFundingRecord = expenseFundingRecords.find((row) => row.sourceTargetId === targetId || row.sourceTargetName === targetName);
 
       if (!existing) return;
 
@@ -583,8 +617,11 @@ export async function renderTransfers(container, period, periodLabel) {
 
       try {
         await deleteTransferConfirmation(existing.id);
-        if (targetRow?.confirmAction === 'create_debt_savings_funding' && existingFundingRecord?.id) {
-          await deleteSnowballTransfer(existingFundingRecord.id);
+        if (targetRow?.confirmAction === 'create_debt_savings_funding' && existingDebtSavingsFundingRecord?.id) {
+          await deleteSnowballTransfer(existingDebtSavingsFundingRecord.id);
+        }
+        if (targetRow?.confirmAction === 'create_expense_funding' && existingExpenseFundingRecord?.id) {
+          await deleteExpenseFundingRecord(existingExpenseFundingRecord.id);
         }
         await renderTransfers(container, period, periodLabel);
       } catch (err) {
