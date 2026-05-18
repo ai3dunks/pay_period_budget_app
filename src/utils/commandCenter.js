@@ -10,6 +10,11 @@ import { getSetting, updateSetting } from '../api/settingsApi.js';
 
 export const COMMAND_CENTER_SETTING_KEY = 'command_center';
 
+export function clearCommandCenterCache() {
+  // Command Center settings are loaded from settings API on demand.
+  // This hook keeps restore refresh flows explicit and centralized.
+}
+
 // ── Defaults ──────────────────────────────────────────────────────────────────
 
 export const COMMAND_CENTER_DEFAULTS = {

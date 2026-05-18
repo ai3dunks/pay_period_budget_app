@@ -2,6 +2,11 @@ import { apiGet, apiPatch, apiPost } from './client.js';
 
 const TRANSACTIONS_MAX_LIMIT = 500;
 
+export function clearTransactionDerivedCaches() {
+  // Transaction-derived summaries are computed at render time from live API data.
+  // This hook keeps restore refresh flows explicit and centralized.
+}
+
 export function getTransactions(params = {}) {
   return apiGet('/api/transactions', params);
 }

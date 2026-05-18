@@ -4,6 +4,11 @@ import { normalizeMatchWordsInput, normalizeText, toNumber } from '../utils/form
 let _cache = null;
 let _loaded = false;
 
+export function clearMasterListsCache() {
+  _cache = null;
+  _loaded = false;
+}
+
 function mapItem(item) {
   return {
     ...item,

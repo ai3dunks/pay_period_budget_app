@@ -5,6 +5,12 @@
  * Exports: renderBackupSection(container)
  */
 
+import { emitAppEvent } from '../app/events.js';
+import { clearMasterListsCache } from '../api/masterListsApi.js';
+import { clearSettingsCache } from '../api/settingsApi.js';
+import { clearTransactionDerivedCaches } from '../api/transactionsApi.js';
+import { clearCommandCenterCache } from '../utils/commandCenter.js';
+
 const BACKEND = '';
 
 function escapeHtml(value) {
@@ -245,11 +251,20 @@ function renderPreviewPanel(container, preview, backup, msgEl) {
         showMsg(msgEl, errMsg, 'error');
         return;
       }
-      const countSummary = Object.entries(result.counts || {})
-        .map(([k, v]) => `${v} ${k}`)
-        .join(', ');
-      const warnText = result.warnings?.length ? ' Warnings: ' + result.warnings.join(' ') : '';
-      showMsg(msgEl, `Import complete (${mode}): ${countSummary}.${warnText}`, 'success');
+
+      clearMasterListsCache();
+      clearSettingsCache();
+      clearCommandCenterCache();
+      clearTransactionDerivedCaches();
+
+      emitAppEvent('budget:transactions-updated');
+      emitAppEvent('budget:recurring-bills-updated');
+      emitAppEvent('budget:income-updated');
+      emitAppEvent('budget:planner-refresh');
+      emitAppEvent('app:navigation-needs-render');
+      emitAppEvent('app:page-needs-render');
+
+      showMsg(msgEl, 'Backup restored. App data has been refreshed.', 'success');
     } catch (err) {
       const msg = err.message.includes('Failed to fetch')
         ? 'Backend not reachable through the local API proxy.'
