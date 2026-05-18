@@ -324,7 +324,9 @@ function _attachGlobalListeners() {
 
   window.addEventListener('budget:income-updated', () => {
     const { activeTab } = getAppState();
-    if (['cash-flow', 'paycheck-planner', 'recurring-bills', 'transfers', 'closeout'].includes(activeTab)) renderActivePage();
+    if (['dashboard', 'cash-flow', 'paycheck-planner', 'recurring-bills', 'transfers', 'closeout', 'reports', 'data-health', 'debt-snowball'].includes(activeTab)) {
+      renderActivePage();
+    }
   });
 
   window.addEventListener('budget:period-changed', () => {
