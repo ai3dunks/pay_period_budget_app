@@ -335,4 +335,11 @@ function _attachGlobalListeners() {
     const { activeTab } = getAppState();
     if (['paycheck-planner', 'transfers', 'closeout'].includes(activeTab)) renderActivePage();
   });
+
+  window.addEventListener('budget:split-settings-updated', () => {
+    const { activeTab } = getAppState();
+    if (['dashboard', 'paycheck-planner', 'recurring-bills', 'transfers', 'closeout', 'reports', 'data-health', 'debt-snowball', 'cash-flow'].includes(activeTab)) {
+      renderActivePage();
+    }
+  });
 }
