@@ -6,6 +6,19 @@ const router = Router();
 // GET /api/accounts
 router.get('/', (_req, res) => {
   try {
+    const excludedRaw = db.prepare('SELECT value_json FROM settings WHERE key = ?').get('plaid_excluded_account_ids')?.value_json;
+    let excludedSet = new Set();
+    if (excludedRaw) {
+      try {
+        const parsed = JSON.parse(excludedRaw);
+        if (Array.isArray(parsed)) {
+          excludedSet = new Set(parsed.map((id) => String(id || '').trim()).filter(Boolean));
+        }
+      } catch (_err) {
+        excludedSet = new Set();
+      }
+    }
+
     const rows = db.prepare(
       `SELECT a.*
        FROM accounts a
@@ -13,7 +26,7 @@ router.get('/', (_req, res) => {
        WHERE a.item_id IS NULL
           OR p.status IS NULL
           OR p.status IN ('active', 'connected')`
-    ).all();
+    ).all().filter((acc) => !excludedSet.has(String(acc.plaid_account_id || '')));
 
     res.json(rows.map((acc) => ({
       id: acc.id,

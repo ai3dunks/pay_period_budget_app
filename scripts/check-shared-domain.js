@@ -8,7 +8,6 @@
 import { generateBudgetPeriods, getCurrentBudgetPeriod, isDateInBudgetPeriod } from '../shared/budgetPeriods.js';
 import { getDetectedPayrollIncome, isCiscoPayrollTransaction } from '../shared/payrollDetection.js';
 import { getExpenseTransactionsForPeriod } from '../shared/expenses.js';
-import { calculateBoaRolloverFromLastPrePaycheckTransaction } from '../shared/boaRollover.js';
 import { calculateBudgetSplit, calculateWantsActuals } from '../shared/transfers.js';
 import { applyRulesToTransactions } from '../shared/transactionRules.js';
 import { isValidPeriod, isValidMoneyAmount, isValidTransactionType } from '../shared/validation.js';
@@ -83,34 +82,8 @@ const settingsWithPending = { includePendingTransactions: true };
 const withPending = getExpenseTransactionsForPeriod(expenseTxns, testPeriod, settingsWithPending);
 assert('pending expense included when setting is true', withPending.some((t) => t.id === 'e2'));
 
-// ── 4. BOA rollover unavailable when running balance missing ──────────────
-console.log('\n[4] calculateBoaRolloverFromLastPrePaycheckTransaction');
-const accounts = [{ id: 'acc1', name: 'Bank of America Checking', subtype: 'checking', balanceCurrent: 500 }];
-const txnsNoBalance = [
-  { id: 't1', date: '2026-05-07', account_id: 'acc1', amount: -25, type: 'Expense', running_balance: null, pending: false, ignored: false },
-  { id: 'p1', date: '2026-05-09', account_id: 'acc1', amount: 3800, name: 'CISCO SYSTEMS DES:PAYROLL', type: 'Income', running_balance: null, pending: false, ignored: false },
-];
-const rolloverNoBalance = calculateBoaRolloverFromLastPrePaycheckTransaction({
-  accounts,
-  transactions: txnsNoBalance,
-  selectedPeriod: testPeriod,
-});
-assert('rollover unavailable when running_balance missing', rolloverNoBalance.canCalculate === false);
-
-const txnsWithBalance = [
-  { id: 't1', date: '2026-05-07', account_id: 'acc1', amount: -25, type: 'Expense', running_balance: 742.50, pending: false, ignored: false },
-  { id: 'p1', date: '2026-05-09', account_id: 'acc1', amount: 3800, name: 'CISCO SYSTEMS DES:PAYROLL', type: 'Income', running_balance: 4542.50, pending: false, ignored: false },
-];
-const rolloverWithBalance = calculateBoaRolloverFromLastPrePaycheckTransaction({
-  accounts,
-  transactions: txnsWithBalance,
-  selectedPeriod: testPeriod,
-});
-assert('rollover available when running_balance present', rolloverWithBalance.canCalculate === true);
-assert('rollover amount = balance of last pre-paycheck txn', rolloverWithBalance.amount === 742.50);
-
-// ── 5. Wants split divides 50/50 ──────────────────────────────────────────
-console.log('\n[5] calculateWantsActuals — 50/50 split');
+// ── 4. Wants split divides 50/50 ──────────────────────────────────────────
+console.log('\n[4] calculateWantsActuals — 50/50 split');
 const wantsTxns = [
   { id: 'w1', date: '2026-05-10', type: 'Wants', category: 'Split', amount: -100, pending: false, ignored: false },
   { id: 'w2', date: '2026-05-11', type: 'Wants', category: 'Josh', amount: -30, pending: false, ignored: false },
@@ -121,8 +94,8 @@ assert('Taylor split share = 50', wantsResult.taylorSplitShare === 50);
 assert('Josh actual = 80 (50 split + 30 direct)', wantsResult.joshActual === 80);
 assert('Taylor actual = 50', wantsResult.taylorActual === 50);
 
-// ── 6. applyRulesToTransactions ───────────────────────────────────────────
-console.log('\n[6] applyRulesToTransactions');
+// ── 5. applyRulesToTransactions ───────────────────────────────────────────
+console.log('\n[5] applyRulesToTransactions');
 const rulesTestTxns = [
   { id: 'r1', name: 'Walmart Grocery', type: '', category: '', amount: -55, reviewed: false, ignored: false },
   { id: 'r2', name: 'Netflix', type: '', category: '', amount: -15, reviewed: false, ignored: false },
@@ -135,8 +108,8 @@ const ruleResults = applyRulesToTransactions(rulesTestTxns, rules);
 assert('Walmart rule applied', ruleResults.some((r) => r.transactionId === 'r1' && r.updates.type === 'Expense'));
 assert('disabled Netflix rule not applied', !ruleResults.some((r) => r.transactionId === 'r2'));
 
-// ── 7. Validation ─────────────────────────────────────────────────────────
-console.log('\n[7] validation');
+// ── 6. Validation ─────────────────────────────────────────────────────────
+console.log('\n[6] validation');
 assert('valid period', isValidPeriod({ startDate: '2026-05-08', exclusiveEndDate: '2026-05-22' }));
 assert('invalid period (missing exclusiveEndDate)', !isValidPeriod({ startDate: '2026-05-08' }));
 assert('valid money amount', isValidMoneyAmount(100.5));

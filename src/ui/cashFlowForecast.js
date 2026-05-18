@@ -4,6 +4,7 @@ import {
   deleteCashFlowAdjustment,
 } from '../api/cashFlowApi.js';
 import { loadCashFlowForecast } from '../utils/cashFlowForecast.js';
+import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -115,6 +116,8 @@ export async function renderCashFlowForecast(container, period, periodLabel, opt
   try {
     const forecast = await loadCashFlowForecast(period);
     const summary = forecast.summary;
+    const ccSettings = await loadCommandCenterSettings().catch(() => null);
+    const cffFeat = (key) => isFeatureEnabled(ccSettings, 'cashFlowForecast', key);
 
     container.innerHTML =
       '<div class="page-header"><div class="page-header-main"><h2 class="page-title">Cash Flow Forecast</h2><p class="page-description">Forecast for ' + escapeHtml(periodLabel || period.id) + '.</p></div></div>' +
@@ -141,10 +144,12 @@ export async function renderCashFlowForecast(container, period, periodLabel, opt
           '</section>'
         : '') +
       renderAdjustmentsSection(forecast.adjustments, period) +
-      '<section class="card">' +
-      '<div class="card-header"><h3 class="card-title">Pay-Period Forecast Table</h3></div>' +
-      renderForecastTable(forecast.groupedRows) +
-      '</section>';
+      (cffFeat('showProjectedBalances') ?
+        '<section class="card">' +
+        '<div class="card-header"><h3 class="card-title">Pay-Period Forecast Table</h3></div>' +
+        renderForecastTable(forecast.groupedRows) +
+        '</section>'
+        : '');
 
     const setAdjustmentMessage = (text, type = 'success') => {
       const el = container.querySelector('#forecast-adjustment-message');

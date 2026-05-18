@@ -484,20 +484,6 @@ router.get('/', (req, res) => {
       });
     }
 
-    if (summary.rollover?.warning || summary.rollover?.source === 'unavailable') {
-      score -= 10;
-      pushIssue(issues, {
-        id: 'rollover-unavailable',
-        severity: 'warning',
-        section: 'rollover',
-        title: 'BOA rollover unavailable',
-        message: summary.rollover?.warning || 'BOA rollover could not be calculated.',
-        count: 0,
-        actionLabel: 'Open Dashboard',
-        actionTarget: 'dashboard',
-      });
-    }
-
     if (unmatchedRecurringBillsCount > 0) {
       score -= 10;
       pushIssue(issues, {
@@ -893,7 +879,7 @@ router.get('/', (req, res) => {
         database: {
           status: 'error',
           dbReachable: false,
-          error: err.message,
+          error: 'Data health check failed.',
         },
       },
       issues: [
@@ -902,7 +888,7 @@ router.get('/', (req, res) => {
           severity: 'error',
           section: 'database',
           title: 'Backend/database error',
-          message: err.message || 'Unknown database error.',
+          message: 'Data health check failed.',
           count: 1,
           actionLabel: 'Open Settings',
           actionTarget: 'settings',
@@ -915,7 +901,7 @@ router.get('/', (req, res) => {
           target: 'settings',
           severity: 'error',
           title: 'Backend/database error',
-          message: err.message || 'Unknown database error.',
+          message: 'Data health check failed.',
           count: 1,
         },
       ],

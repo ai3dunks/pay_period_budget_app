@@ -11,12 +11,13 @@ import {
   exchangePublicToken,
   syncTransactions,
   removePlaidItem,
+  removePlaidAccount,
+  restorePlaidAccount,
   cleanupRemovedPlaid,
   loadPlaidScript,
 } from '../api/plaidApi.js';
 import { getRules, createRule, patchRule, applyRules } from '../api/rulesApi.js';
 import { getSetting, updateSetting } from '../api/settingsApi.js';
-import { API_BASE } from '../api/client.js';
 import {
   getRuleEditorState,
   openRuleEditor,
@@ -27,10 +28,29 @@ import {
   updateRuleEditorDraftField,
 } from './rulesManager.js';
 import { emitAppEvent } from '../app/events.js';
+import {
+  COMMAND_CENTER_SETTING_KEY,
+  COMMAND_CENTER_DEFAULTS,
+  TOGGLE_META,
+  PAGE_META,
+  PRESETS,
+  loadCommandCenterSettings,
+  isFeatureEnabled,
+  updateCommandCenterFeature,
+  resetCommandCenterPage,
+  resetAllCommandCenterDefaults,
+  applyCommandCenterPreset,
+} from '../utils/commandCenter.js';
 
 // ── page-level state ────────────────────────────────────────────────────────
 let _rulesMessage = '';
 let _rulesMessageType = 'success';
+let _accountTabNamesMessage = '';
+let _accountTabNamesMessageType = 'success';
+let _ccMessage = '';
+let _ccMessageType = 'success';
+let _ccSettings = null; // cached command center settings during a render cycle
+const ACCOUNT_TAB_LABELS_SETTING_KEY = 'account_tab_labels';
 
 export async function renderSettings(container) {
   const body = _renderFrame(container);
@@ -41,6 +61,7 @@ export async function renderSettings(container) {
   let activeAccounts = [];
   let rules = [];
   let safeMoneySettings = {};
+  let accountTabLabels = {};
 
   try {
     const [statusData, accountsData, rulesData] = await Promise.all([
@@ -51,10 +72,16 @@ export async function renderSettings(container) {
     status = statusData;
     activeAccounts = accountsData ?? (Array.isArray(status?.accounts) ? status.accounts : []);
     rules = Array.isArray(rulesData) ? rulesData : [];
-    safeMoneySettings = await getSetting('safe_money_settings').catch(() => ({}));
+    let ccSettingsData;
+    [safeMoneySettings, accountTabLabels, ccSettingsData] = await Promise.all([
+      getSetting('safe_money_settings').catch(() => ({})),
+      getSetting(ACCOUNT_TAB_LABELS_SETTING_KEY).catch(() => ({})),
+      loadCommandCenterSettings().catch(() => null),
+    ]);
+    _ccSettings = ccSettingsData;
   } catch (err) {
     body.innerHTML =
-      '<section class="card"><div class="error-card">Backend not running on ' + API_BASE + '.' +
+      '<section class="card"><div class="error-card">Backend not reachable through the local API proxy.' +
       '<br><small>' + escapeHtml(err.message) + '</small></div></section>';
     return;
   }
@@ -64,6 +91,7 @@ export async function renderSettings(container) {
   const removedItemsCount = Number(status?.removedItemsCount || 0);
   const staleAccountsCount = Number(status?.staleAccountsCount || 0);
   const accountCount = activeAccounts.length;
+  const excludedAccounts = Array.isArray(status?.excludedAccounts) ? status.excludedAccounts : [];
 
   const itemsHtml = connected && items.length
     ? items.map((item) =>
@@ -79,8 +107,26 @@ export async function renderSettings(container) {
     : '';
 
   const safeMoneyBuffer = Number(safeMoneySettings.safetyBuffer ?? safeMoneySettings.safety_buffer ?? 0) || 0;
-  const safeMoneyIncludeRollover = safeMoneySettings.includeBoaRolloverInSafeToSpend !== false;
   const safeMoneyIncludePending = safeMoneySettings.includePendingTransactions === true || safeMoneySettings.include_pending_transactions === true;
+  const normalizedAccountTabLabels = _normalizeAccountTabLabels(accountTabLabels);
+  const settingsFeat = (key) => isFeatureEnabled(_ccSettings, 'settings', key);
+
+  const accountLabelRows = activeAccounts.length
+    ? activeAccounts.map((account) => {
+      const accountId = String(account.id || '');
+      const defaultLabel = _buildDefaultAccountTabLabel(account);
+      const customLabel = String(normalizedAccountTabLabels[accountId] || '');
+      const effectiveLabel = customLabel.trim() || defaultLabel;
+
+      return (
+        '<tr>' +
+        '<td>' + escapeHtml(defaultLabel) + '</td>' +
+        '<td><input class="account-tab-name-input" data-account-tab-input="1" data-account-id="' + escapeHtml(accountId) + '" value="' + escapeHtml(customLabel) + '" placeholder="Use default"></td>' +
+        '<td>' + escapeHtml(effectiveLabel) + '</td>' +
+        '</tr>'
+      );
+    }).join('')
+    : '<tr><td colspan="3">Connect a bank account to customize tab names.</td></tr>';
 
   const rulesRows = rules.length
     ? rules.map((rule) =>
@@ -98,51 +144,108 @@ export async function renderSettings(container) {
       ).join('')
     : '<tr><td colspan="7">No rules yet.</td></tr>';
 
+  const activeAccountsRows = activeAccounts.length
+    ? activeAccounts.map((account) => {
+      const accountName = String(account.name || account.officialName || 'Account').trim();
+      const mask = String(account.mask || '').trim();
+      const label = mask ? accountName + ' (' + mask + ')' : accountName;
+      return (
+        '<tr>' +
+        '<td>' + escapeHtml(label) + '</td>' +
+        '<td>' + escapeHtml(account.institutionName || '-') + '</td>' +
+        '<td>' + escapeHtml(account.subtype || account.type || '-') + '</td>' +
+        '<td class="inline-actions">' +
+        '<button class="button button-secondary button-sm" data-action="remove-plaid-account" data-plaid-account-id="' + escapeHtml(account.plaidAccountId) + '">Remove Account</button>' +
+        '</td>' +
+        '</tr>'
+      );
+    }).join('')
+    : '<tr><td colspan="4">No active accounts yet.</td></tr>';
+
+  const excludedAccountsRows = excludedAccounts.length
+    ? excludedAccounts.map((account) => {
+      const accountName = String(account.name || account.officialName || 'Excluded account').trim();
+      const mask = String(account.mask || '').trim();
+      const label = mask ? accountName + ' (' + mask + ')' : accountName;
+      return (
+        '<tr>' +
+        '<td>' + escapeHtml(label) + '</td>' +
+        '<td>' + escapeHtml(account.institutionName || '-') + '</td>' +
+        '<td>' + escapeHtml(account.subtype || account.type || '-') + '</td>' +
+        '<td class="inline-actions">' +
+        '<button class="button button-secondary button-sm" data-action="restore-plaid-account" data-plaid-account-id="' + escapeHtml(account.plaidAccountId) + '">Restore</button>' +
+        '</td>' +
+        '</tr>'
+      );
+    }).join('')
+    : '<tr><td colspan="4">No excluded accounts.</td></tr>';
+
   const ruleEditorHtml = renderRuleEditorModalHtml(activeAccounts);
 
   body.innerHTML =
-    '<section class="card settings-section">' +
-    '<div class="card-header"><h3 class="card-title">Plaid Connection</h3><p class="card-description">Connect your bank and sync transactions.</p></div>' +
-    '<div class="connection-status ' + (connected ? 'connected' : 'not-connected') + '">' +
-    (connected ? 'Connected' : 'Not connected') +
-    (accountCount > 0 ? ' <span class="account-count">' + accountCount + ' account' + (accountCount !== 1 ? 's' : '') + '</span>' : '') +
-    '</div>' +
-    '<p class="card-description">Removed items: ' + removedItemsCount + ' | Stale accounts: ' + staleAccountsCount + '</p>' +
-    (itemsHtml ? '<div class="institutions-list">' + itemsHtml + '</div>' : '<p class="empty-state">No connected institutions yet.</p>') +
-    '<div class="settings-actions">' +
-    '<button class="button button-primary" data-action="connect-plaid">Connect Bank</button>' +
-    (connected ? '<button class="button button-secondary" data-action="sync-transactions">Sync Transactions</button>' : '') +
-    '<button class="button button-secondary" data-action="cleanup-removed-plaid">Clean removed bank data</button>' +
-    '</div>' +
-    '<div id="settings-message" class="settings-message" aria-live="polite"></div>' +
-    '</section>' +
+    (settingsFeat('showPlaidConnections') ?
+      '<section class="card settings-section">' +
+      '<div class="card-header"><h3 class="card-title">Plaid Connection</h3><p class="card-description">Connect your bank and sync transactions.</p></div>' +
+      '<div class="connection-status ' + (connected ? 'connected' : 'not-connected') + '">' +
+      (connected ? 'Connected' : 'Not connected') +
+      (accountCount > 0 ? ' <span class="account-count">' + accountCount + ' account' + (accountCount !== 1 ? 's' : '') + '</span>' : '') +
+      '</div>' +
+      '<p class="card-description">Removed items: ' + removedItemsCount + ' | Stale accounts: ' + staleAccountsCount + '</p>' +
+      (itemsHtml ? '<div class="institutions-list">' + itemsHtml + '</div>' : '<p class="empty-state">No connected institutions yet.</p>') +
+      '<div class="table-wrap"><table class="table"><thead><tr><th>Account</th><th>Institution</th><th>Type</th><th>Actions</th></tr></thead><tbody>' + activeAccountsRows + '</tbody></table></div>' +
+      '<details class="safe-money-disclosure"><summary>Excluded accounts (' + excludedAccounts.length + ')</summary>' +
+      '<div class="table-wrap"><table class="table"><thead><tr><th>Account</th><th>Institution</th><th>Type</th><th>Actions</th></tr></thead><tbody>' + excludedAccountsRows + '</tbody></table></div>' +
+      '<p class="card-description">Restoring an account re-allows it for future syncs. Run Sync Transactions after restoring.</p>' +
+      '</details>' +
+      '<div class="settings-actions">' +
+      '<button class="button button-primary" data-action="connect-plaid">Connect Bank</button>' +
+      (connected ? '<button class="button button-secondary" data-action="sync-transactions">Sync Transactions</button>' : '') +
+      '<button class="button button-secondary" data-action="cleanup-removed-plaid">Clean removed bank data</button>' +
+      '</div>' +
+      '<div id="settings-message" class="settings-message" aria-live="polite"></div>' +
+      '</section>' : '') +
 
-    '<section class="card settings-section">' +
-    '<div class="card-header"><h3 class="card-title">Rules Manager</h3><p class="card-description">Manage saved transaction classification rules.</p></div>' +
-    (_rulesMessage ? '<p class="settings-message ' + (_rulesMessageType === 'error' ? 'error' : 'success') + '">' + escapeHtml(_rulesMessage) + '</p>' : '') +
-    '<div class="settings-actions"><button class="button button-secondary" data-action="rules-add">Add Rule</button></div>' +
-    '<div class="table-wrap"><table class="table"><thead><tr><th>Status</th><th>Name</th><th>Match Type</th><th>Match Value</th><th>Type</th><th>Category</th><th>Actions</th></tr></thead>' +
-    '<tbody>' + rulesRows + '</tbody></table></div>' +
-    '</section>' +
+    (settingsFeat('showAccountTabNames') ?
+      '<section class="card settings-section">' +
+      '<div class="card-header"><h3 class="card-title">Account Tab Names</h3><p class="card-description">Rename account tabs shown on the Transactions page.</p></div>' +
+      (_accountTabNamesMessage ? '<p class="settings-message ' + (_accountTabNamesMessageType === 'error' ? 'error' : 'success') + '">' + escapeHtml(_accountTabNamesMessage) + '</p>' : '') +
+      '<div class="table-wrap"><table class="table"><thead><tr><th>Default tab name</th><th>Custom tab name</th><th>Current tab label</th></tr></thead><tbody>' + accountLabelRows + '</tbody></table></div>' +
+      '<div class="settings-actions">' +
+      '<button class="button button-primary" data-action="save-account-tab-names">Save Tab Names</button>' +
+      '<button class="button button-secondary" data-action="reset-account-tab-names">Reset to Defaults</button>' +
+      '</div>' +
+      '</section>' : '') +
 
-    '<section class="card settings-section">' +
-    '<div class="card-header"><h3 class="card-title">Data Tools</h3><p class="card-description">Quick actions for data checks and safety backups.</p></div>' +
-    '<div class="settings-actions">' +
-    '<button class="button button-secondary" data-action="data-tools-run-health">Run Data Health Check</button>' +
-    '<button class="button button-secondary" data-action="data-tools-cleanup-removed-plaid">Clean removed bank data</button>' +
-    '<button class="button button-secondary" data-action="data-tools-export-backup">Export Backup</button>' +
-    '</div></section>' +
+    (settingsFeat('showRulesManager') ?
+      '<section class="card settings-section">' +
+      '<div class="card-header"><h3 class="card-title">Rules Manager</h3><p class="card-description">Manage saved transaction classification rules.</p></div>' +
+      (_rulesMessage ? '<p class="settings-message ' + (_rulesMessageType === 'error' ? 'error' : 'success') + '">' + escapeHtml(_rulesMessage) + '</p>' : '') +
+      '<div class="settings-actions"><button class="button button-secondary" data-action="rules-add">Add Rule</button></div>' +
+      '<div class="table-wrap"><table class="table"><thead><tr><th>Status</th><th>Name</th><th>Match Type</th><th>Match Value</th><th>Type</th><th>Category</th><th>Actions</th></tr></thead>' +
+      '<tbody>' + rulesRows + '</tbody></table></div>' +
+      '</section>' : '') +
 
-    '<section class="card settings-section">' +
-    '<div class="card-header"><h3 class="card-title">Safe Money</h3><p class="card-description">Configure the shared safe-to-spend and safe-to-transfer rules.</p></div>' +
-    '<div class="form-grid safe-money-settings-grid">' +
-    '<label class="form-field"><span>Safety buffer</span><input id="safe-money-buffer" type="number" step="0.01" value="' + escapeHtml(String(safeMoneyBuffer)) + '"></label>' +
-    '<label class="form-field checkbox-field"><span><input id="safe-money-rollover" type="checkbox"' + (safeMoneyIncludeRollover ? ' checked' : '') + '> Include BOA rollover in Safe to Spend</span></label>' +
-    '<label class="form-field checkbox-field"><span><input id="safe-money-pending" type="checkbox"' + (safeMoneyIncludePending ? ' checked' : '') + '> Include pending transactions in Safe Money</span></label>' +
-    '</div>' +
-    '<div class="settings-actions"><button class="button button-primary" data-action="safe-money-save">Save Safe Money Settings</button></div>' +
-    '<div id="safe-money-message" class="settings-message" aria-live="polite"></div>' +
-    '</section>' +
+    (settingsFeat('showDataTools') ?
+      '<section class="card settings-section">' +
+      '<div class="card-header"><h3 class="card-title">Data Tools</h3><p class="card-description">Quick actions for data checks and safety backups.</p></div>' +
+      '<div class="settings-actions">' +
+      '<button class="button button-secondary" data-action="data-tools-run-health">Run Data Health Check</button>' +
+      '<button class="button button-secondary" data-action="data-tools-cleanup-removed-plaid">Clean removed bank data</button>' +
+      '<button class="button button-secondary" data-action="data-tools-export-backup">Export Backup</button>' +
+      '</div></section>' : '') +
+
+    (settingsFeat('showSafeMoney') ?
+      '<section class="card settings-section">' +
+      '<div class="card-header"><h3 class="card-title">Safe Money</h3><p class="card-description">Configure the shared safe-to-spend and safe-to-transfer rules.</p></div>' +
+      '<div class="form-grid safe-money-settings-grid">' +
+      '<label class="form-field"><span>Safety buffer</span><input id="safe-money-buffer" type="number" step="0.01" value="' + escapeHtml(String(safeMoneyBuffer)) + '"></label>' +
+      '<label class="form-field checkbox-field"><span><input id="safe-money-pending" type="checkbox"' + (safeMoneyIncludePending ? ' checked' : '') + '> Include pending transactions in Safe Money</span></label>' +
+      '</div>' +
+      '<div class="settings-actions"><button class="button button-primary" data-action="safe-money-save">Save Safe Money Settings</button></div>' +
+      '<div id="safe-money-message" class="settings-message" aria-live="polite"></div>' +
+      '</section>' : '') +
+
+    (settingsFeat('showCommandCenter') ? _renderCommandCenterSection(_ccSettings) : '') +
 
     ruleEditorHtml;
 
@@ -152,7 +255,6 @@ export async function renderSettings(container) {
     try {
       const value = {
         safetyBuffer: Number(document.getElementById('safe-money-buffer')?.value || 0),
-        includeBoaRolloverInSafeToSpend: !!document.getElementById('safe-money-rollover')?.checked,
         includePendingTransactions: !!document.getElementById('safe-money-pending')?.checked,
       };
       await updateSetting('safe_money_settings', value);
@@ -162,7 +264,140 @@ export async function renderSettings(container) {
     }
   });
 
-  renderBackupSection(body);
+  body.querySelector('[data-action="save-account-tab-names"]')?.addEventListener('click', async () => {
+    try {
+      const entries = Array.from(body.querySelectorAll('[data-account-tab-input="1"]'));
+      const nextLabels = {};
+
+      for (const input of entries) {
+        const accountId = String(input?.dataset?.accountId || '').trim();
+        if (!accountId) continue;
+        const value = String(input.value || '').trim();
+        if (value) nextLabels[accountId] = value;
+      }
+
+      await updateSetting(ACCOUNT_TAB_LABELS_SETTING_KEY, nextLabels);
+      _accountTabNamesMessage = 'Account tab names saved.';
+      _accountTabNamesMessageType = 'success';
+      emitAppEvent('budget:transactions-updated');
+      const contentEl = document.getElementById('page-content');
+      if (contentEl) await renderSettings(contentEl);
+    } catch (err) {
+      _accountTabNamesMessage = err.message;
+      _accountTabNamesMessageType = 'error';
+      const contentEl = document.getElementById('page-content');
+      if (contentEl) await renderSettings(contentEl);
+    }
+  });
+
+  body.querySelector('[data-action="reset-account-tab-names"]')?.addEventListener('click', async () => {
+    try {
+      await updateSetting(ACCOUNT_TAB_LABELS_SETTING_KEY, {});
+      _accountTabNamesMessage = 'Account tab names reset to defaults.';
+      _accountTabNamesMessageType = 'success';
+      emitAppEvent('budget:transactions-updated');
+      const contentEl = document.getElementById('page-content');
+      if (contentEl) await renderSettings(contentEl);
+    } catch (err) {
+      _accountTabNamesMessage = err.message;
+      _accountTabNamesMessageType = 'error';
+      const contentEl = document.getElementById('page-content');
+      if (contentEl) await renderSettings(contentEl);
+    }
+  });
+
+  // Command Center — toggle individual feature
+  body.addEventListener('change', async (e) => {
+    const btn = e.target.closest('[data-action="cc-toggle"]');
+    if (!btn) return;
+    const pageKey = btn.dataset.page;
+    const featureKey = btn.dataset.feature;
+    if (!pageKey || !featureKey) return;
+    try {
+      _ccSettings = await updateCommandCenterFeature(_ccSettings || {}, pageKey, featureKey, btn.checked);
+      _ccMessage = 'Saved.';
+      _ccMessageType = 'success';
+      window.dispatchEvent(new CustomEvent('app:page-needs-render'));
+    } catch (err) {
+      const messageEl = document.getElementById('cc-message');
+      if (messageEl) { messageEl.className = 'settings-message error'; messageEl.textContent = err.message; }
+      // Revert the checkbox
+      btn.checked = !btn.checked;
+    }
+  });
+
+  // Command Center — preset buttons
+  body.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-action="cc-preset"]');
+    if (!btn) return;
+    const presetKey = btn.dataset.preset;
+    if (!presetKey) return;
+    btn.disabled = true;
+    try {
+      _ccSettings = await applyCommandCenterPreset(_ccSettings || {}, presetKey);
+      _ccMessage = (PRESETS[presetKey]?.label || presetKey) + ' applied.';
+      _ccMessageType = 'success';
+      window.dispatchEvent(new CustomEvent('app:navigation-needs-render'));
+      const contentEl = document.getElementById('page-content');
+      if (contentEl) await renderSettings(contentEl);
+    } catch (err) {
+      _ccMessage = err.message;
+      _ccMessageType = 'error';
+      const contentEl = document.getElementById('page-content');
+      if (contentEl) await renderSettings(contentEl);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // Command Center — reset a single page
+  body.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-action="cc-reset-page"]');
+    if (!btn) return;
+    const pageKey = btn.dataset.page;
+    if (!pageKey) return;
+    btn.disabled = true;
+    try {
+      _ccSettings = await resetCommandCenterPage(_ccSettings || {}, pageKey);
+      _ccMessage = (PAGE_META[pageKey]?.label || pageKey) + ' reset to defaults.';
+      _ccMessageType = 'success';
+      window.dispatchEvent(new CustomEvent('app:navigation-needs-render'));
+      const contentEl = document.getElementById('page-content');
+      if (contentEl) await renderSettings(contentEl);
+    } catch (err) {
+      _ccMessage = err.message;
+      _ccMessageType = 'error';
+      const contentEl = document.getElementById('page-content');
+      if (contentEl) await renderSettings(contentEl);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // Command Center — reset all defaults
+  body.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-action="cc-reset-all"]');
+    if (!btn) return;
+    if (!confirm('Reset ALL Command Center settings to defaults?')) return;
+    btn.disabled = true;
+    try {
+      _ccSettings = await resetAllCommandCenterDefaults();
+      _ccMessage = 'All settings reset to defaults.';
+      _ccMessageType = 'success';
+      window.dispatchEvent(new CustomEvent('app:navigation-needs-render'));
+      const contentEl = document.getElementById('page-content');
+      if (contentEl) await renderSettings(contentEl);
+    } catch (err) {
+      _ccMessage = err.message;
+      _ccMessageType = 'error';
+      const contentEl = document.getElementById('page-content');
+      if (contentEl) await renderSettings(contentEl);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  if (settingsFeat('showDataTools')) renderBackupSection(body);
 }
 
 // ── Plaid Link orchestration ────────────────────────────────────────────────
@@ -269,6 +504,44 @@ export async function handleCleanupRemovedPlaid(btn) {
   } catch (err) {
     showSettingsMessage('Error: ' + err.message, true);
   } finally {
+    btn.disabled = false;
+    btn.dataset.loading = '';
+  }
+}
+
+export async function handleRemovePlaidAccount(btn) {
+  const plaidAccountId = btn.dataset.plaidAccountId;
+  if (!plaidAccountId) return;
+  if (!confirm('Remove this account from the app and exclude it from future syncs?')) return;
+  btn.disabled = true;
+  btn.dataset.loading = 'true';
+  showSettingsMessage('Removing account...');
+  try {
+    await removePlaidAccount(plaidAccountId);
+    const contentEl = document.getElementById('page-content');
+    if (contentEl) await renderSettings(contentEl);
+    emitAppEvent('budget:transactions-updated');
+    showSettingsMessage('Account removed and excluded from sync.');
+  } catch (err) {
+    showSettingsMessage('Error: ' + err.message, true);
+    btn.disabled = false;
+    btn.dataset.loading = '';
+  }
+}
+
+export async function handleRestorePlaidAccount(btn) {
+  const plaidAccountId = btn.dataset.plaidAccountId;
+  if (!plaidAccountId) return;
+  btn.disabled = true;
+  btn.dataset.loading = 'true';
+  showSettingsMessage('Restoring account...');
+  try {
+    await restorePlaidAccount(plaidAccountId);
+    const contentEl = document.getElementById('page-content');
+    if (contentEl) await renderSettings(contentEl);
+    showSettingsMessage('Account restored. Click Sync Transactions to import it again.');
+  } catch (err) {
+    showSettingsMessage('Error: ' + err.message, true);
     btn.disabled = false;
     btn.dataset.loading = '';
   }
@@ -411,4 +684,100 @@ function _renderFrame(container) {
     '</header>' +
     '<div id="page-body" class="page-body"></div>';
   return document.getElementById('page-body');
+}
+
+function _buildDefaultAccountTabLabel(account) {
+  const accountName = String(account?.name || account?.officialName || 'Account').trim();
+  const accountMask = String(account?.mask || '').trim();
+  return accountMask ? accountName + ' (' + accountMask + ')' : accountName;
+}
+
+function _normalizeAccountTabLabels(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const normalized = {};
+  for (const [accountId, label] of Object.entries(value)) {
+    const key = String(accountId || '').trim();
+    const name = String(label || '').trim();
+    if (key && name) normalized[key] = name;
+  }
+  return normalized;
+}
+
+function _renderCommandCenterSection(ccSettings) {
+  const cc = ccSettings || {};
+
+  const pageGroupsHtml = Object.keys(COMMAND_CENTER_DEFAULTS).map((pageKey) => {
+    const pageMeta = PAGE_META[pageKey] || { label: pageKey, description: '' };
+    const pageDefaults = COMMAND_CENTER_DEFAULTS[pageKey] || {};
+    const pageStored = cc[pageKey] || {};
+    const allowPageToggle = pageKey !== 'settings';
+
+    const pageIsEnabled = allowPageToggle
+      ? ('pageEnabled' in pageStored ? !!pageStored.pageEnabled : !!pageDefaults.pageEnabled)
+      : true;
+
+    const togglesHtml = Object.keys(pageDefaults)
+      .filter((featureKey) => featureKey !== 'pageEnabled')
+      .map((featureKey) => {
+        const meta = (TOGGLE_META[pageKey] || {})[featureKey] || { label: featureKey, description: '' };
+        const lockOn = pageKey === 'settings' && featureKey === 'showCommandCenter';
+        const isEnabled = lockOn
+          ? true
+          : (featureKey in pageStored ? !!pageStored[featureKey] : !!pageDefaults[featureKey]);
+        return (
+          '<label class="cc-toggle-row">' +
+          '<input type="checkbox" data-action="cc-toggle" data-page="' + escapeHtml(pageKey) + '" data-feature="' + escapeHtml(featureKey) + '"' + (isEnabled ? ' checked' : '') + (pageIsEnabled && !lockOn ? '' : ' disabled') + '>' +
+          '<span class="cc-toggle-label">' + escapeHtml(meta.label) + '</span>' +
+          '<span class="cc-toggle-desc">' + escapeHtml(lockOn ? (meta.description + ' (Always enabled)') : meta.description) + '</span>' +
+          '</label>'
+        );
+      }).join('');
+
+    return (
+      '<div class="cc-page-group' + (pageIsEnabled ? '' : ' cc-page-group--disabled') + '">' +
+      '<div class="cc-page-group-header">' +
+      '<div class="cc-page-group-title">' +
+      '<span class="cc-page-label">' + escapeHtml(pageMeta.label) + '</span>' +
+      '<span class="cc-page-desc">' + escapeHtml(pageMeta.description) + '</span>' +
+      '</div>' +
+      '<div class="cc-page-group-actions">' +
+      (allowPageToggle
+        ? '<label class="cc-page-pill-toggle" title="' + (pageIsEnabled ? 'Disable' : 'Enable') + ' this page">' +
+          '<input type="checkbox" class="cc-page-pill-input" data-action="cc-toggle" data-page="' + escapeHtml(pageKey) + '" data-feature="pageEnabled"' + (pageIsEnabled ? ' checked' : '') + '>' +
+          '<span class="cc-page-pill-track"><span class="cc-page-pill-thumb"></span></span>' +
+          '<span class="cc-page-pill-label">' + (pageIsEnabled ? 'On' : 'Off') + '</span>' +
+          '</label>'
+        : '') +
+      '<button class="button button-ghost button-xs" data-action="cc-reset-page" data-page="' + escapeHtml(pageKey) + '">Reset</button>' +
+      '</div>' +
+      '</div>' +
+      '<div class="cc-toggles">' + togglesHtml + '</div>' +
+      '</div>'
+    );
+  }).join('');
+
+  const presetButtonsHtml = Object.keys(PRESETS).map((key) => {
+    const p = PRESETS[key];
+    return '<button class="button button-secondary button-sm" data-action="cc-preset" data-preset="' + escapeHtml(key) + '" title="' + escapeHtml(p.description) + '">' + escapeHtml(p.label) + '</button>';
+  }).join('');
+
+  const messageHtml = _ccMessage
+    ? '<p id="cc-message" class="settings-message ' + (_ccMessageType === 'error' ? 'error' : 'success') + '">' + escapeHtml(_ccMessage) + '</p>'
+    : '<div id="cc-message" class="settings-message" aria-live="polite"></div>';
+
+  // Clear after render
+  _ccMessage = '';
+
+  return (
+    '<section class="card settings-section" id="command-center-section">' +
+    '<div class="card-header"><h3 class="card-title">Command Center</h3><p class="card-description">Control which features and sections are visible on each page.</p></div>' +
+    '<div class="cc-presets-bar">' +
+    '<span class="cc-presets-label">Presets:</span>' +
+    presetButtonsHtml +
+    '<button class="button button-ghost button-sm" data-action="cc-reset-all">Reset All Defaults</button>' +
+    '</div>' +
+    '<div class="cc-page-groups">' + pageGroupsHtml + '</div>' +
+    messageHtml +
+    '</section>'
+  );
 }

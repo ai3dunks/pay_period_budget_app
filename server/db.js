@@ -4,6 +4,7 @@ import { readFileSync, mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
 import { randomUUID } from 'crypto';
+import { encryptSecret, isEncryptedSecret } from './secretStore.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const dataDir = join(__dirname, '..', 'data');
@@ -412,6 +413,19 @@ ensureRecurringBillStatusTable();
 ensureTransactionRulesTable();
 ensureIndexes();
 seedMasterListsIfEmpty();
+
+function migratePlaintextPlaidTokens() {
+  const rows = db.prepare('SELECT id, access_token FROM plaid_items').all();
+  const update = db.prepare('UPDATE plaid_items SET access_token = ?, updated_at = ? WHERE id = ?');
+  const now = new Date().toISOString();
+
+  for (const row of rows) {
+    if (!row.access_token || isEncryptedSecret(row.access_token)) continue;
+    update.run(encryptSecret(row.access_token), now, row.id);
+  }
+}
+
+migratePlaintextPlaidTokens();
 
 /**
  * Safely convert a value for SQLite binding.

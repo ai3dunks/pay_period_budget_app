@@ -5,7 +5,7 @@
  * Exports: renderBackupSection(container)
  */
 
-const BACKEND = 'http://localhost:8787';
+const BACKEND = '';
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -95,7 +95,7 @@ export function renderBackupSection(container) {
       showMsg(msgEl, 'Backup downloaded successfully.', 'success');
     } catch (err) {
       const msg = err.message.includes('Failed to fetch')
-        ? 'Backend not running on ' + BACKEND + '.'
+        ? 'Backend not reachable through the local API proxy.'
         : 'Backup export failed: ' + err.message;
       showMsg(msgEl, msg, 'error');
     } finally {
@@ -149,7 +149,7 @@ export function renderBackupSection(container) {
       fileInfo.style.display = 'block';
     } catch (err) {
       const msg = err.message.includes('Failed to fetch')
-        ? 'Backend not running on ' + BACKEND + '.'
+        ? 'Backend not reachable through the local API proxy.'
         : 'Preview failed: ' + err.message;
       showMsg(msgEl, msg, 'error');
     }
@@ -233,7 +233,11 @@ function renderPreviewPanel(container, preview, backup, msgEl) {
       const res = await fetch(BACKEND + '/api/backup/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ backup, mode }),
+        body: JSON.stringify({
+          backup,
+          mode,
+          confirmText: mode === 'replace_safe_data' ? 'REPLACE SAFE DATA' : '',
+        }),
       });
       const result = await res.json();
       if (!result.ok) {
@@ -248,7 +252,7 @@ function renderPreviewPanel(container, preview, backup, msgEl) {
       showMsg(msgEl, `Import complete (${mode}): ${countSummary}.${warnText}`, 'success');
     } catch (err) {
       const msg = err.message.includes('Failed to fetch')
-        ? 'Backend not running on ' + BACKEND + '.'
+        ? 'Backend not reachable through the local API proxy.'
         : 'Import failed: ' + err.message;
       showMsg(msgEl, msg, 'error');
     } finally {

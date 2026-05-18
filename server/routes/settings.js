@@ -30,7 +30,7 @@ router.get('/:key', (req, res) => {
     res.json({ key, value });
   } catch (err) {
     console.error('Error retrieving setting:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to retrieve setting.' });
   }
 });
 
@@ -62,7 +62,7 @@ router.patch('/:key', (req, res) => {
     res.json({ key, value, updated_at: now });
   } catch (err) {
     console.error('Error updating setting:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to update setting.' });
   }
 });
 

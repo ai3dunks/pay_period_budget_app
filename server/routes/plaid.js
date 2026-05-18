@@ -2,8 +2,11 @@ import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import db, { safeSqlValue } from '../db.js';
 import { plaidClient, getPlaidProducts, getPlaidCountryCodes } from '../plaidClient.js';
+import { decryptSecret, encryptSecret, shouldStoreRawPlaidJson } from '../secretStore.js';
 
 const router = Router();
+const EXCLUDED_PLAID_ACCOUNTS_KEY = 'plaid_excluded_account_ids';
+const EXCLUDED_PLAID_ACCOUNT_META_KEY = 'plaid_excluded_account_meta';
 
 function savePlaidSyncResult(result) {
   const now = new Date().toISOString();
@@ -29,11 +32,102 @@ function getActiveAccounts() {
   ).all();
 }
 
+function readJsonSetting(key, fallback) {
+  const row = db.prepare('SELECT value_json FROM settings WHERE key = ?').get(key);
+  if (!row || !row.value_json) return fallback;
+  try {
+    return JSON.parse(row.value_json);
+  } catch (_err) {
+    return fallback;
+  }
+}
+
+function writeJsonSetting(key, value) {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO settings (key, value_json, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`
+  ).run(key, JSON.stringify(value), now);
+}
+
+function readExcludedPlaidAccountIds() {
+  const value = readJsonSetting(EXCLUDED_PLAID_ACCOUNTS_KEY, []);
+  if (!Array.isArray(value)) return new Set();
+  return new Set(value.map((id) => String(id || '').trim()).filter(Boolean));
+}
+
+function writeExcludedPlaidAccountIds(setOrArray) {
+  const ids = Array.from(setOrArray || []).map((id) => String(id || '').trim()).filter(Boolean);
+  ids.sort((a, b) => a.localeCompare(b));
+  writeJsonSetting(EXCLUDED_PLAID_ACCOUNTS_KEY, ids);
+}
+
+function readExcludedPlaidAccountMeta() {
+  const value = readJsonSetting(EXCLUDED_PLAID_ACCOUNT_META_KEY, {});
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const normalized = {};
+  for (const [accountId, meta] of Object.entries(value)) {
+    const id = String(accountId || '').trim();
+    if (!id) continue;
+    normalized[id] = {
+      plaidAccountId: id,
+      name: String(meta?.name || '').trim(),
+      officialName: String(meta?.officialName || '').trim(),
+      mask: String(meta?.mask || '').trim(),
+      institutionName: String(meta?.institutionName || '').trim(),
+      type: String(meta?.type || '').trim(),
+      subtype: String(meta?.subtype || '').trim(),
+    };
+  }
+  return normalized;
+}
+
+function writeExcludedPlaidAccountMeta(metaMap) {
+  writeJsonSetting(EXCLUDED_PLAID_ACCOUNT_META_KEY, metaMap || {});
+}
+
+function cleanupExcludedPlaidAccountData(excludedIds) {
+  const ids = Array.from(excludedIds || []);
+  if (!ids.length) {
+    return { deletedAccounts: 0, deletedTransactions: 0 };
+  }
+
+  const placeholders = ids.map(() => '?').join(', ');
+  db.prepare(
+    'DELETE FROM transaction_splits WHERE parent_transaction_id IN (' +
+      'SELECT id FROM transactions WHERE plaid_account_id IN (' + placeholders + ')' +
+    ')'
+  ).run(...ids);
+  const deletedAccounts = db
+    .prepare('DELETE FROM accounts WHERE plaid_account_id IN (' + placeholders + ')')
+    .run(...ids).changes;
+  const deletedTransactions = db
+    .prepare('DELETE FROM transactions WHERE plaid_account_id IN (' + placeholders + ')')
+    .run(...ids).changes;
+
+  return { deletedAccounts, deletedTransactions };
+}
+
 // GET /api/plaid/status
 router.get('/status', (_req, res) => {
   try {
     const items = getActiveItems();
-    const accounts = getActiveAccounts();
+    const excludedIds = readExcludedPlaidAccountIds();
+    const excludedMeta = readExcludedPlaidAccountMeta();
+    const accounts = getActiveAccounts().filter((acc) => !excludedIds.has(String(acc.plaid_account_id || '')));
+    const excludedAccounts = Array.from(excludedIds).map((accountId) => {
+      const meta = excludedMeta[accountId] || {};
+      return {
+        plaidAccountId: accountId,
+        name: meta.name || '',
+        officialName: meta.officialName || '',
+        mask: meta.mask || '',
+        institutionName: meta.institutionName || '',
+        type: meta.type || '',
+        subtype: meta.subtype || '',
+      };
+    });
     const removedItemsCount = db
       .prepare("SELECT COUNT(*) AS count FROM plaid_items WHERE status = 'removed'")
       .get()?.count || 0;
@@ -69,6 +163,7 @@ router.get('/status', (_req, res) => {
         institutionName: acc.institution_name,
         balanceCurrent: acc.balance_current,
       })),
+      excludedAccounts,
       removedItemsCount,
       staleAccountsCount,
     });
@@ -156,7 +251,7 @@ router.post('/exchange-public-token', async (req, res) => {
       db.prepare(
         'UPDATE plaid_items SET access_token = ?, institution_id = ?, institution_name = ?, status = ?, updated_at = ? WHERE item_id = ?'
       ).run(
-        safeSqlValue(access_token),
+        safeSqlValue(encryptSecret(access_token)),
         safeSqlValue(institutionId),
         safeSqlValue(institutionName),
         'active',
@@ -169,7 +264,7 @@ router.post('/exchange-public-token', async (req, res) => {
       ).run(
         randomUUID(),
         safeSqlValue(item_id),
-        safeSqlValue(access_token),
+        safeSqlValue(encryptSecret(access_token)),
         safeSqlValue(institutionId),
         safeSqlValue(institutionName),
         'active',
@@ -189,6 +284,8 @@ router.post('/exchange-public-token', async (req, res) => {
 router.post('/sync-transactions', async (_req, res) => {
   try {
     const items = db.prepare("SELECT * FROM plaid_items WHERE status IS NULL OR status IN ('active', 'connected')").all();
+    const excludedAccountIds = readExcludedPlaidAccountIds();
+    const excludedCleanup = cleanupExcludedPlaidAccountData(excludedAccountIds);
 
     let addedNew = 0;
     let updatedExisting = 0;
@@ -197,6 +294,7 @@ router.post('/sync-transactions', async (_req, res) => {
     let unchanged = 0;
     let accountsInserted = 0;
     let accountsUpdated = 0;
+    let excludedTransactionsSkipped = 0;
     const now = new Date().toISOString();
 
     for (const item of items) {
@@ -204,7 +302,7 @@ router.post('/sync-transactions', async (_req, res) => {
       let hasMore = true;
 
       while (hasMore) {
-        const syncParams = { access_token: item.access_token };
+        const syncParams = { access_token: decryptSecret(item.access_token) };
         if (cursor) syncParams.cursor = cursor;
 
         const syncResponse = await plaidClient.transactionsSync(syncParams);
@@ -219,6 +317,10 @@ router.post('/sync-transactions', async (_req, res) => {
 
         // Upsert accounts
         for (const acc of accounts) {
+          if (excludedAccountIds.has(String(acc.account_id || ''))) {
+            continue;
+          }
+
           const existingAcc = db
             .prepare('SELECT id FROM accounts WHERE plaid_account_id = ?')
             .get(acc.account_id);
@@ -237,7 +339,7 @@ router.post('/sync-transactions', async (_req, res) => {
               safeSqlValue(acc.balances?.current),
               safeSqlValue(acc.balances?.available),
               safeSqlValue(acc.balances?.iso_currency_code),
-              JSON.stringify(acc),
+              shouldStoreRawPlaidJson() ? JSON.stringify(acc) : null,
               now,
               now,
               acc.account_id
@@ -259,7 +361,7 @@ router.post('/sync-transactions', async (_req, res) => {
               safeSqlValue(acc.balances?.current),
               safeSqlValue(acc.balances?.available),
               safeSqlValue(acc.balances?.iso_currency_code),
-              JSON.stringify(acc),
+              shouldStoreRawPlaidJson() ? JSON.stringify(acc) : null,
               now,
               now,
               now
@@ -271,6 +373,11 @@ router.post('/sync-transactions', async (_req, res) => {
         // Upsert added transactions
         // Amount convention: Plaid positive = spending = store as negative; Plaid negative = income = positive
         for (const txn of added) {
+          if (excludedAccountIds.has(String(txn.account_id || ''))) {
+            excludedTransactionsSkipped++;
+            continue;
+          }
+
           const appAmount = txn.amount > 0 ? -txn.amount : Math.abs(txn.amount);
           const accountRow = db
             .prepare('SELECT id FROM accounts WHERE plaid_account_id = ?')
@@ -302,7 +409,7 @@ router.post('/sync-transactions', async (_req, res) => {
               0,
               0,
               null,
-              JSON.stringify(txn),
+              shouldStoreRawPlaidJson() ? JSON.stringify(txn) : null,
               now,
               now
             );
@@ -321,7 +428,7 @@ router.post('/sync-transactions', async (_req, res) => {
               safeSqlValue(appAmount),
               safeSqlValue(txn.pending ? 1 : 0),
               safeSqlValue(txn.pending_transaction_id || null),
-              JSON.stringify(txn),
+              shouldStoreRawPlaidJson() ? JSON.stringify(txn) : null,
               now,
               txn.transaction_id
             );
@@ -331,6 +438,11 @@ router.post('/sync-transactions', async (_req, res) => {
 
         // Update modified transactions
         for (const txn of modifiedTxns) {
+          if (excludedAccountIds.has(String(txn.account_id || ''))) {
+            excludedTransactionsSkipped++;
+            continue;
+          }
+
           const appAmount = txn.amount > 0 ? -txn.amount : Math.abs(txn.amount);
           const result = db.prepare(
             'UPDATE transactions SET date = ?, authorized_date = ?, name = ?, merchant_name = ?, amount = ?, pending = ?, pending_transaction_id = ?, raw_json = ?, updated_at = ? WHERE plaid_transaction_id = ?'
@@ -342,7 +454,7 @@ router.post('/sync-transactions', async (_req, res) => {
             safeSqlValue(appAmount),
             safeSqlValue(txn.pending ? 1 : 0),
             safeSqlValue(txn.pending_transaction_id || null),
-            JSON.stringify(txn),
+            shouldStoreRawPlaidJson() ? JSON.stringify(txn) : null,
             now,
             txn.transaction_id
           );
@@ -381,6 +493,7 @@ router.post('/sync-transactions', async (_req, res) => {
       modified: modifiedCount,
       removed: removedCount,
       unchanged,
+      excludedTransactionsSkipped,
       totalTransactions,
       lastSyncedAt: now,
     });
@@ -394,6 +507,9 @@ router.post('/sync-transactions', async (_req, res) => {
       modified: modifiedCount,
       removed: removedCount,
       unchanged,
+      excludedTransactionsSkipped,
+      excludedAccountsDeleted: excludedCleanup.deletedAccounts,
+      excludedTransactionsDeleted: excludedCleanup.deletedTransactions,
       totalTransactions,
       lastSyncedAt: now,
     });
@@ -401,10 +517,80 @@ router.post('/sync-transactions', async (_req, res) => {
     console.error('Error syncing transactions:', err.response?.data || err.message);
     savePlaidSyncResult({
       status: 'failed',
-      error: err.message,
+      error: 'Plaid sync failed.',
       details: err.response?.data ? JSON.stringify(err.response.data).slice(0, 400) : null,
     });
-    res.status(500).json({ error: 'Failed to sync transactions: ' + err.message });
+    res.status(500).json({ error: 'Failed to sync transactions.' });
+  }
+});
+
+// DELETE /api/plaid/accounts/:plaidAccountId
+router.delete('/accounts/:plaidAccountId', (req, res) => {
+  const plaidAccountId = String(req.params.plaidAccountId || '').trim();
+  if (!plaidAccountId) {
+    return res.status(400).json({ error: 'plaidAccountId is required.' });
+  }
+
+  try {
+    const account = db
+      .prepare('SELECT * FROM accounts WHERE plaid_account_id = ?')
+      .get(plaidAccountId);
+
+    const excludedIds = readExcludedPlaidAccountIds();
+    excludedIds.add(plaidAccountId);
+    writeExcludedPlaidAccountIds(excludedIds);
+
+    const meta = readExcludedPlaidAccountMeta();
+    if (account) {
+      meta[plaidAccountId] = {
+        plaidAccountId,
+        name: account.name || '',
+        officialName: account.official_name || '',
+        mask: account.mask || '',
+        institutionName: account.institution_name || '',
+        type: account.type || '',
+        subtype: account.subtype || '',
+      };
+    } else if (!meta[plaidAccountId]) {
+      meta[plaidAccountId] = { plaidAccountId };
+    }
+    writeExcludedPlaidAccountMeta(meta);
+
+    const deletedAccounts = db
+      .prepare('DELETE FROM accounts WHERE plaid_account_id = ?')
+      .run(plaidAccountId).changes;
+    db.prepare('DELETE FROM transaction_splits WHERE parent_transaction_id IN (SELECT id FROM transactions WHERE plaid_account_id = ?)').run(plaidAccountId);
+    const deletedTransactions = db
+      .prepare('DELETE FROM transactions WHERE plaid_account_id = ?')
+      .run(plaidAccountId).changes;
+
+    return res.json({ ok: true, plaidAccountId, deletedAccounts, deletedTransactions, excluded: true });
+  } catch (err) {
+    console.error('Error excluding Plaid account:', err.message);
+    return res.status(500).json({ error: 'Failed to exclude account.' });
+  }
+});
+
+// POST /api/plaid/accounts/:plaidAccountId/restore
+router.post('/accounts/:plaidAccountId/restore', (req, res) => {
+  const plaidAccountId = String(req.params.plaidAccountId || '').trim();
+  if (!plaidAccountId) {
+    return res.status(400).json({ error: 'plaidAccountId is required.' });
+  }
+
+  try {
+    const excludedIds = readExcludedPlaidAccountIds();
+    excludedIds.delete(plaidAccountId);
+    writeExcludedPlaidAccountIds(excludedIds);
+
+    const meta = readExcludedPlaidAccountMeta();
+    delete meta[plaidAccountId];
+    writeExcludedPlaidAccountMeta(meta);
+
+    return res.json({ ok: true, plaidAccountId, excluded: false, message: 'Account restored. Run Sync Transactions to import it again.' });
+  } catch (err) {
+    console.error('Error restoring Plaid account:', err.message);
+    return res.status(500).json({ error: 'Failed to restore account.' });
   }
 });
 
@@ -420,13 +606,14 @@ router.delete('/items/:itemId', async (req, res) => {
 
     // Optionally call Plaid item/remove
     try {
-      await plaidClient.itemRemove({ access_token: item.access_token });
+      await plaidClient.itemRemove({ access_token: decryptSecret(item.access_token) });
     } catch (plaidErr) {
       console.warn('Could not remove item from Plaid (continuing):', plaidErr.message);
     }
 
     const cleanup = db.transaction((targetItemId) => {
       const deletedAccounts = db.prepare('DELETE FROM accounts WHERE item_id = ?').run(targetItemId).changes;
+      db.prepare('DELETE FROM transaction_splits WHERE parent_transaction_id IN (SELECT id FROM transactions WHERE item_id = ? AND reviewed = 0)').run(targetItemId);
       const deletedUnreviewedTransactions = db
         .prepare('DELETE FROM transactions WHERE item_id = ? AND reviewed = 0')
         .run(targetItemId).changes;

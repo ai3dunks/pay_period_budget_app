@@ -3,7 +3,7 @@
  * All fetch calls go through here for consistent error handling.
  */
 
-export const API_BASE = 'http://localhost:8787';
+export const API_BASE = '';
 
 /**
  * Build a query string from a params object, omitting null/undefined/empty values.
@@ -23,7 +23,7 @@ async function request(path, options = {}) {
   try {
     response = await fetch(API_BASE + path, options);
   } catch (_err) {
-    const err = new Error('Backend not running on ' + API_BASE + '.');
+    const err = new Error('Backend not reachable through the local API proxy.');
     err.offline = true;
     throw err;
   }

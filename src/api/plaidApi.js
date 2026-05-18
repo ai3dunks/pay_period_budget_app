@@ -1,4 +1,4 @@
-import { apiGet, apiPost, apiDelete, API_BASE } from './client.js';
+import { apiGet, apiPost, apiDelete } from './client.js';
 
 export function getPlaidStatus() {
   return apiGet('/api/plaid/status');
@@ -22,6 +22,14 @@ export function syncTransactions() {
 
 export function removePlaidItem(itemId) {
   return apiDelete('/api/plaid/items/' + encodeURIComponent(itemId));
+}
+
+export function removePlaidAccount(plaidAccountId) {
+  return apiDelete('/api/plaid/accounts/' + encodeURIComponent(plaidAccountId));
+}
+
+export function restorePlaidAccount(plaidAccountId) {
+  return apiPost('/api/plaid/accounts/' + encodeURIComponent(plaidAccountId) + '/restore', {});
 }
 
 export function cleanupRemovedPlaid() {

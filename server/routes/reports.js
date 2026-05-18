@@ -80,7 +80,6 @@ function computePeriodIssues(row) {
   if (toNumber(row.recurringBillsLeftToPay, 0) > 0) issues.push('unpaid bills');
   if (toNumber(row.unreviewedTransactions, 0) > 0) issues.push('unreviewed transactions');
   if (toNumber(row.transferShortfall, 0) > 0) issues.push('transfer shortfall');
-  if (row.boaRollover === null || row.boaRollover === undefined) issues.push('rollover unavailable');
   if (toNumber(row.dataHealthScore, 100) < 70) {
     issues.push('low data health');
     row.dataHealthWarning = 'Some report values may be incomplete because this period had data health issues.';
@@ -134,7 +133,6 @@ function periodFromSnapshotRow(snapshot, closeout) {
 
     safeToSpend: sourceTotals.safeToSpend === null || sourceTotals.safeToSpend === undefined ? null : toNumber(sourceTotals.safeToSpend, 0),
     safeToTransfer: sourceTotals.safeToTransfer === null || sourceTotals.safeToTransfer === undefined ? null : toNumber(sourceTotals.safeToTransfer, 0),
-    boaRollover: snapshot.boa_rollover === null || snapshot.boa_rollover === undefined ? null : toNumber(snapshot.boa_rollover, 0),
 
     reviewedTransactions: toNumber(snapshot.reviewed_transactions, 0),
     unreviewedTransactions: toNumber(snapshot.unreviewed_transactions, 0),
@@ -187,7 +185,6 @@ function periodFromCloseoutOnly(closeout) {
 
     safeToSpend: totals.safeToSpend === null || totals.safeToSpend === undefined ? null : toNumber(totals.safeToSpend, 0),
     safeToTransfer: totals.safeToTransfer === null || totals.safeToTransfer === undefined ? null : toNumber(totals.safeToTransfer, 0),
-    boaRollover: totals.boaRollover === null || totals.boaRollover === undefined ? null : toNumber(totals.boaRollover, 0),
 
     reviewedTransactions: toNumber(counts.reviewedTransactions, 0),
     unreviewedTransactions: toNumber(counts.unreviewedTransactions, 0),
@@ -215,7 +212,6 @@ async function periodFromLiveCurrent(currentPeriodId) {
     { targetKey: 'taylor', targetLabel: 'Taylor', plannedAmount: toNumber(summary.transfers.taylor, 0), completedAmount: 0 },
     { targetKey: 'discover', targetLabel: 'Discover', plannedAmount: toNumber(summary.transfers.discover, 0), completedAmount: 0 },
     { targetKey: 'debtSavings', targetLabel: 'Debt/Savings', plannedAmount: toNumber(summary.transfers.debtSavings, 0), completedAmount: 0 },
-    { targetKey: 'boaReserve', targetLabel: 'BOA Reserve', plannedAmount: toNumber(summary.transfers.boaReserve, 0), completedAmount: 0 },
   ];
 
   const row = {
@@ -247,7 +243,6 @@ async function periodFromLiveCurrent(currentPeriodId) {
 
     safeToSpend: summary.safeMoney?.safeToSpend?.amount ?? null,
     safeToTransfer: summary.safeMoney?.safeToTransfer?.amount ?? null,
-    boaRollover: summary.rollover?.amount ?? null,
 
     reviewedTransactions: context.transactions.filter((row) => !row.ignored && !!row.reviewed).length,
     unreviewedTransactions: context.transactions.filter((row) => !row.ignored && !row.reviewed).length,
@@ -276,9 +271,10 @@ async function periodFromLiveCurrent(currentPeriodId) {
 
 async function fetchDataHealthScore(periodId, req) {
   try {
-    const host = req.get('host') || 'localhost:8787';
-    const protocol = req.protocol || 'http';
-    const response = await fetch(protocol + '://' + host + '/api/data-health?periodId=' + encodeURIComponent(periodId));
+    const port = process.env.BACKEND_PORT || '8787';
+    const response = await fetch('http://127.0.0.1:' + port + '/api/data-health?periodId=' + encodeURIComponent(periodId), {
+      headers: process.env.LOCAL_API_TOKEN ? { Authorization: 'Bearer ' + process.env.LOCAL_API_TOKEN } : {},
+    });
     if (!response.ok) return null;
     const data = await response.json().catch(() => null);
     if (!data || typeof data !== 'object') return null;
@@ -538,7 +534,6 @@ function buildComparison(periodA, periodB) {
     plannedTransfersTotal: metric('plannedTransfersTotal'),
     completedTransfersTotal: metric('completedTransfersTotal'),
     unreviewedTransactions: metric('unreviewedTransactions'),
-    boaRollover: metric('boaRollover'),
   };
 }
 
@@ -642,7 +637,6 @@ router.get('/summary', async (req, res) => {
         transferShortfall: row.transferShortfall,
         safeToSpend: row.safeToSpend,
         safeToTransfer: row.safeToTransfer,
-        boaRollover: row.boaRollover,
         reviewedTransactions: row.reviewedTransactions,
         unreviewedTransactions: row.unreviewedTransactions,
         pendingTransactions: row.pendingTransactions,

@@ -3,8 +3,9 @@ import {
   formatCurrencyValue,
 } from '../utils/budgetCalculations.js';
 import { buildPayPeriodSummary } from '../utils/payPeriodSummary.js';
+import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
 
-const BACKEND = 'http://localhost:8787';
+const BACKEND = '';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -163,10 +164,6 @@ async function buildSnapshotSummary(period) {
       manualOverrideActive: summary.income.source === 'Manual override',
       source: summary.income.source,
     },
-    boaRollover: {
-      amount: summary.rollover.amount,
-      source: summary.rollover.source,
-    },
     recurringBills: {
       countDue: summary.recurringBills.dueCount,
       countPaid: paidBills.length,
@@ -192,7 +189,6 @@ async function buildSnapshotSummary(period) {
       taylor: summary.transfers.taylor,
       discover: summary.transfers.discover,
       debtSavings: summary.transfers.debtSavings,
-      boaReserve: summary.transfers.boaReserve,
       total: summary.transfers.total,
     },
     transactionReview: {
@@ -210,7 +206,6 @@ async function buildSnapshotSummary(period) {
     regularPaycheck: summary.income.regularPaycheck,
     bonusIncome: summary.income.bonusIncome,
     otherIncome: summary.income.otherIncome,
-    boaRollover: summary.rollover.amount,
     recurringBillsDue: summary.recurringBills.dueTotal,
     recurringBillsPaid: summary.recurringBills.paidTotal,
     recurringBillsLeftToPay: summary.recurringBills.unpaidTotal,
@@ -223,7 +218,6 @@ async function buildSnapshotSummary(period) {
     taylorTransfer: summary.transfers.taylor,
     discoverTransfer: summary.transfers.discover,
     debtSavingsTransfer: summary.transfers.debtSavings,
-    boaReserve: summary.transfers.boaReserve,
     totalTransactions,
     reviewedTransactions,
     unreviewedTransactions,
@@ -344,15 +338,6 @@ function renderSnapshotDetail(snapshot) {
     '</div>' +
     '</div>' +
 
-    // BOA Rollover
-    '<div class="snapshot-section">' +
-    '<h4>BOA Rollover</h4>' +
-    '<div class="snapshot-grid">' +
-    '<div><span>Amount</span><strong>' + escapeHtml(fmt(snapshot.boa_rollover)) + '</strong></div>' +
-    '<div><span>Source</span><strong>' + escapeHtml(detail.boaRollover?.source || '—') + '</strong></div>' +
-    '</div>' +
-    '</div>' +
-
     // Recurring Bills
     '<div class="snapshot-section">' +
     '<h4>Recurring Bills</h4>' +
@@ -398,7 +383,6 @@ function renderSnapshotDetail(snapshot) {
     '<div><span>Taylor</span><strong>' + escapeHtml(fmt(snapshot.taylor_transfer)) + '</strong></div>' +
     '<div><span>Discover</span><strong>' + escapeHtml(fmt(snapshot.discover_transfer)) + '</strong></div>' +
     '<div><span>Debt/Savings</span><strong>' + escapeHtml(fmt(snapshot.debt_savings_transfer)) + '</strong></div>' +
-    '<div><span>BOA Reserve</span><strong>' + escapeHtml(fmt(snapshot.boa_reserve)) + '</strong></div>' +
     '<div><span>Total Planned</span><strong>' + escapeHtml(fmt(snapshot.planned_transfers_total)) + '</strong></div>' +
     '</div>' +
     '</div>' +
@@ -567,12 +551,16 @@ export async function renderHistory(container, period, periodLabel, options = {}
 
   // Load snapshots
   let snapshots = [];
+  let histCcSettings = null;
   try {
-    snapshots = await fetchJson('/api/history');
+    [snapshots, histCcSettings] = await Promise.all([
+      fetchJson('/api/history'),
+      loadCommandCenterSettings().catch(() => null),
+    ]);
     _historyState.snapshots = snapshots;
   } catch (err) {
     body.innerHTML =
-      '<section class="card"><div class="error-card">Backend not running on http://localhost:8787.<br><small>' +
+      '<section class="card"><div class="error-card">Backend not reachable through the local API proxy.<br><small>' +
       escapeHtml(String(err.message || '')) + '</small></div></section>';
     return;
   }
@@ -600,9 +588,9 @@ export async function renderHistory(container, period, periodLabel, options = {}
       '</section>';
 
     const summaryCards = renderSummaryCards(snapshots);
-    const table = renderSnapshotTable(snapshots, selectedId);
+    const table = isFeatureEnabled(histCcSettings, 'history', 'showPayPeriodHistory') ? renderSnapshotTable(snapshots, selectedId) : '';
     const detail = selected ? renderSnapshotDetail(selected) : '';
-    const compare = snapshots.length >= 2 ? renderCompareSection(snapshots, compareA, compareB) : '';
+    const compare = (snapshots.length >= 2 && isFeatureEnabled(histCcSettings, 'history', 'showSnapshotComparison')) ? renderCompareSection(snapshots, compareA, compareB) : '';
 
     return summaryCards + saveCard + table + detail + compare;
   }

@@ -5,7 +5,7 @@ import { getTransferConfirmations } from '../api/transferConfirmationApi.js';
 import { getDebtSnowballPaymentPlans } from '../api/debtSnowballApi.js';
 import { getCashFlowAdjustments } from '../api/cashFlowApi.js';
 
-const BACKEND = 'http://localhost:8787';
+const BACKEND = '';
 
 function toNumber(value, fallback = 0) {
   const parsed = Number(value);
@@ -181,7 +181,6 @@ export async function loadCashFlowForecast(period) {
     splitSummary,
     expenseBudget: { totalExpenseBudget: summary.expenses.budgetTotal },
     wantsActuals,
-    boaReserve: summary.transfers.boaReserve,
   });
 
   const transferTargets = [
@@ -208,12 +207,6 @@ export async function loadCashFlowForecast(period) {
       targetName: 'Debt/Savings',
       plannedAmount: Math.max(0, transferPlan.debtSavingsRemaining),
       alreadyUsed: transferPlan.debtSavingsRedirect,
-    },
-    {
-      id: 'boa-reserve',
-      targetName: 'Bank of America Reserve',
-      plannedAmount: transferPlan.boaReserve,
-      alreadyUsed: Math.max(0, (summary.recurringBills.unpaidTotal || 0) - transferPlan.boaReserve),
     },
   ];
 

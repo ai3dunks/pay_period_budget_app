@@ -201,11 +201,11 @@ export function findRecurringBillMatches(billsDue = [], transactions = [], optio
 
 /**
  * Main helper: build the full recurring-bills-due structure including statuses
- * and BOA reserve calculation.
+ * and unpaid totals.
  *
  * @param {{ recurringBillsList, period, billStatusRows }} opts
  * @returns {{ statusMap, billsDue, billsDueWithStatus, categoryActuals,
- *             unpaidBills, unpaidTotal, unpaidBoaReserveBills, boaReserve }}
+ *             unpaidBills, unpaidTotal }}
  */
 export function calculateRecurringBillsDue({ recurringBillsList = [], period, billStatusRows = [] }) {
   const statusMap = buildStatusMap(billStatusRows);
@@ -226,16 +226,6 @@ export function calculateRecurringBillsDue({ recurringBillsList = [], period, bi
   const unpaidBills = billsDueWithStatus.filter((bill) => !(bill.status?.paid));
   const unpaidTotal = unpaidBills.reduce((sum, bill) => sum + toNumber(bill.amount, 0), 0);
 
-  const unpaidBoaReserveBills = unpaidBills.filter((bill) => {
-    const paidFrom = String(bill.paidFrom || bill.paid_from || '').trim().toLowerCase();
-    if (!paidFrom) return true;
-    if (paidFrom.includes('bank of america') || paidFrom === 'boa' || paidFrom.includes('boa')) return true;
-    if (paidFrom.includes('discover') || paidFrom.includes('external')) return false;
-    return false;
-  });
-
-  const boaReserve = unpaidBoaReserveBills.reduce((sum, bill) => sum + toNumber(bill.amount, 0), 0);
-
   return {
     statusMap,
     billsDue,
@@ -243,7 +233,5 @@ export function calculateRecurringBillsDue({ recurringBillsList = [], period, bi
     categoryActuals,
     unpaidBills,
     unpaidTotal,
-    unpaidBoaReserveBills,
-    boaReserve,
   };
 }

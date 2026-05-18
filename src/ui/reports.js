@@ -1,4 +1,6 @@
-const BACKEND = 'http://localhost:8787';
+import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
+
+const BACKEND = '';
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -438,6 +440,9 @@ function createTransferCsv(rows) {
 export async function renderReports(container, period, options = {}) {
   container.innerHTML = '<section class="card"><p class="empty-state">Loading reports...</p></section>';
 
+  const ccSettings = await loadCommandCenterSettings().catch(() => null);
+  const rptFeat = (key) => isFeatureEnabled(ccSettings, 'reports', key);
+
   const state = {
     filter: '12',
     includeCurrent: true,
@@ -516,15 +521,15 @@ export async function renderReports(container, period, options = {}) {
       '<label>Custom count <input id="reports-custom-limit" type="number" min="1" max="36" value="' + escapeHtml(String(state.customLimit)) + '"></label>' +
       '<label><input id="reports-include-current" type="checkbox" ' + (state.includeCurrent ? 'checked' : '') + '> Include current open period</label>' +
       '<button class="button button-secondary" data-action="reports-refresh">Refresh</button>' +
-      '<button class="button button-secondary" data-action="reports-export-json">Export Report JSON</button>' +
-      '<button class="button button-secondary" data-action="reports-export-csv">Export Report CSV</button>' +
+      (rptFeat('showExportTools') ? '<button class="button button-secondary" data-action="reports-export-json">Export Report JSON</button>' : '') +
+      (rptFeat('showExportTools') ? '<button class="button button-secondary" data-action="reports-export-csv">Export Report CSV</button>' : '') +
       '</section>' +
       renderSummaryCards(summary.totals || {}) +
       renderOverviewTable(periods) +
-      renderIncomeTrend(state.income?.rows || [], state.income?.stats || {}) +
+      (rptFeat('showIncomeReports') ? renderIncomeTrend(state.income?.rows || [], state.income?.stats || {}) : '') +
       renderRecurringBillsTrend(state.bills?.rows || []) +
-      renderExpenseTrend(periods) +
-      renderCategoryTrends(state.category?.summary || []) +
+      (rptFeat('showSpendingTrends') ? renderExpenseTrend(periods) : '') +
+      (rptFeat('showCategoryReports') ? renderCategoryTrends(state.category?.summary || []) : '') +
       renderTransferTrends(state.transfers?.rows || []) +
       renderSafeMoneyTrend(periods) +
       renderBillReliability(state.bills?.reliability || []) +
@@ -546,7 +551,7 @@ export async function renderReports(container, period, options = {}) {
         renderBody();
       } catch (err) {
         state.error = err.message.includes('Failed to fetch')
-          ? 'Backend not running on http://localhost:8787.'
+          ? 'Backend not reachable through the local API proxy.'
           : 'Reports could not be loaded.';
         renderBody();
       }
@@ -602,7 +607,7 @@ export async function renderReports(container, period, options = {}) {
         renderBody();
       } catch (err) {
         state.error = err.message.includes('Failed to fetch')
-          ? 'Backend not running on http://localhost:8787.'
+          ? 'Backend not reachable through the local API proxy.'
           : 'Reports could not be loaded.';
         renderBody();
       }
@@ -614,7 +619,7 @@ export async function renderReports(container, period, options = {}) {
     renderBody();
   } catch (err) {
     state.error = err.message.includes('Failed to fetch')
-      ? 'Backend not running on http://localhost:8787.'
+      ? 'Backend not reachable through the local API proxy.'
       : 'Reports could not be loaded.';
     renderBody();
   }

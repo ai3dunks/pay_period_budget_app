@@ -12,8 +12,9 @@ import {
   updateTransferConfirmation,
   deleteTransferConfirmation,
 } from '../api/transferConfirmationApi.js';
+import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
 
-const BACKEND = 'http://localhost:8787';
+const BACKEND = '';
 const DEFAULT_BUDGET_SPLIT = { Needs: 60, Wants: 20, 'Debts/Savings': 20 };
 
 function escapeHtml(value) {
@@ -289,12 +290,11 @@ export async function renderTransfers(container, period, periodLabel) {
     splitSummary,
     expenseBudget: { totalExpenseBudget: sharedSummary.expenses.budgetTotal },
     wantsActuals,
-    boaReserve: sharedSummary.transfers.boaReserve,
   });
 
   const alerts = [];
   if (backendDown) {
-    alerts.push('Backend not running on http://localhost:8787.');
+    alerts.push('Backend not reachable through the local API proxy.');
   }
   if (masterListsError) {
     alerts.push(masterListsError);
@@ -320,9 +320,6 @@ export async function renderTransfers(container, period, periodLabel) {
   if (sharedSummary.expenses.budgetTotal <= 0) {
     alerts.push('Add expense budgets in Master Lists > Expense List.');
   }
-  if (transferPlan.boaReserve > 0) {
-    alerts.push(formatCurrencyValue(transferPlan.boaReserve) + ' should stay in Bank of America for unpaid recurring bills.');
-  }
   const safeTransfer = safeMoney.safeToTransfer || { amount: sharedSummary.safeToTransfer, blockers: [], warnings: [], status: 'warning' };
   const totalPlannedTransfers = Number(transferPlan.totalPlannedTransfers || 0);
   if (Number.isFinite(Number(safeTransfer.amount)) && totalPlannedTransfers > Number(safeTransfer.amount || 0)) {
@@ -346,6 +343,9 @@ export async function renderTransfers(container, period, periodLabel) {
   } catch (err) {
     console.error('Transfers: failed loading transfer confirmations:', err);
   }
+
+  const ccSettings = await loadCommandCenterSettings().catch(() => null);
+  const trFeat = (key) => isFeatureEnabled(ccSettings, 'transfers', key);
 
   const closeoutWarningHtml = closeoutRecord && closeoutRecord.status === 'closed'
     ? '<div class="closeout-warning">This period is closed. Reopen it before changing closeout-related data.</div>'
@@ -425,35 +425,14 @@ export async function renderTransfers(container, period, periodLabel) {
     ],
   };
 
-  const boaReserveRow = {
-    id: 'boa-reserve',
-    target: 'Bank of America Reserve',
-    formulaSource: 'Unpaid recurring bills staying in BOA',
-    plannedAmount: transferPlan.boaReserve,
-    alreadyUsed: Math.max(0, sharedSummary.recurringBills.unpaidTotal - transferPlan.boaReserve),
-    transferNeeded: transferPlan.boaReserve,
-    status: '',
-    detailLines: [
-      { label: 'Unpaid recurring bill total', value: formatCurrencyValue(sharedSummary.recurringBills.unpaidTotal) },
-      { label: 'BOA reserve unpaid total', value: formatCurrencyValue(transferPlan.boaReserve) },
-      { label: 'Mortgage included if unpaid', value: 'Included when unpaid and paid from BOA/blank.' },
-      { label: 'Autopay bills included if unpaid', value: 'Yes' },
-      {
-        label: 'Unpaid BOA bills',
-        value: sharedSummary.recurringBills.dueRows.filter((bill) => !bill.status?.paid && bill.isBoaReserve).length
-          ? sharedSummary.recurringBills.dueRows
-            .filter((bill) => !bill.status?.paid && bill.isBoaReserve)
-            .map((bill) => bill.name + ' (' + formatCurrencyValue(bill.amount) + ')')
-            .join(', ')
-          : 'None',
-      },
-    ],
-  };
+  const rowsToShow = [
+    trFeat('showJoshTaylorSplit') ? joshRow : null,
+    trFeat('showJoshTaylorSplit') ? taylorRow : null,
+    trFeat('showDiscoverTransferPlan') ? discoverRow : null,
+    trFeat('showDebtSavingsTransferPlan') ? debtSavingsRow : null,
+  ].filter(Boolean).map((row) => ({ ...row, status: getTransferStatus(row.id, row) }));
 
-  const rows = [joshRow, taylorRow, discoverRow, debtSavingsRow, boaReserveRow].map((row) => ({
-    ...row,
-    status: getTransferStatus(row.id, row),
-  }));
+  const rows = rowsToShow;
 
   const html =
 
@@ -463,7 +442,6 @@ export async function renderTransfers(container, period, periodLabel) {
     '<article class="card"><p>Taylor Transfer</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.taylorTransfer)) + '</h3></article>' +
     '<article class="card"><p>Discover Transfer</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.discoverTransfer)) + '</h3></article>' +
     '<article class="card"><p>Debt/Savings Transfer</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.debtSavingsTransfer)) + '</h3></article>' +
-    '<article class="card"><p>Bank of America Reserve</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.boaReserve)) + '</h3></article>' +
     '</section>' +
     '<section class="card planner-safe-money-card">' +
     '<div class="card-header"><h3 class="card-title">Safe to Transfer</h3><p class="card-description">Shared safe transfer amount from the summary engine.</p></div>' +
@@ -488,19 +466,21 @@ export async function renderTransfers(container, period, periodLabel) {
     '</table></div>' +
     '<p class="muted-note">Debt/Savings transfer excludes bills paid directly from Bank of America.</p>' +
     '</section>' +
-    '<section class="card wants-activity-card">' +
-    '<div class="card-header"><h3 class="card-title">Wants Activity</h3><p class="card-description">Transactions already counted against Josh/Taylor wants.</p></div>' +
-    '<div class="transfer-summary-grid wants-summary-grid">' +
-    '<article class="card"><p>Josh direct wants spent</p><h3>' + escapeHtml(formatCurrencyValue(wantsActuals.joshDirect)) + '</h3></article>' +
-    '<article class="card"><p>Taylor direct wants spent</p><h3>' + escapeHtml(formatCurrencyValue(wantsActuals.taylorDirect)) + '</h3></article>' +
-    '<article class="card"><p>Split wants spent</p><h3>' + escapeHtml(formatCurrencyValue(wantsActuals.splitTotal)) + '</h3></article>' +
-    '<article class="card"><p>Josh share of Split</p><h3>' + escapeHtml(formatCurrencyValue(wantsActuals.joshSplitShare)) + '</h3></article>' +
-    '<article class="card"><p>Taylor share of Split</p><h3>' + escapeHtml(formatCurrencyValue(wantsActuals.taylorSplitShare)) + '</h3></article>' +
-    '<article class="card"><p>Josh overused amount</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.joshOverused)) + '</h3></article>' +
-    '<article class="card"><p>Taylor overused amount</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.taylorOverused)) + '</h3></article>' +
-    '</div>' +
-    renderWantsTable(wantsActuals.wantsRows) +
-    '</section>';
+    (trFeat('showJoshTaylorSplit') ?
+      '<section class="card wants-activity-card">' +
+      '<div class="card-header"><h3 class="card-title">Wants Activity</h3><p class="card-description">Transactions already counted against Josh/Taylor wants.</p></div>' +
+      '<div class="transfer-summary-grid wants-summary-grid">' +
+      '<article class="card"><p>Josh direct wants spent</p><h3>' + escapeHtml(formatCurrencyValue(wantsActuals.joshDirect)) + '</h3></article>' +
+      '<article class="card"><p>Taylor direct wants spent</p><h3>' + escapeHtml(formatCurrencyValue(wantsActuals.taylorDirect)) + '</h3></article>' +
+      '<article class="card"><p>Split wants spent</p><h3>' + escapeHtml(formatCurrencyValue(wantsActuals.splitTotal)) + '</h3></article>' +
+      '<article class="card"><p>Josh share of Split</p><h3>' + escapeHtml(formatCurrencyValue(wantsActuals.joshSplitShare)) + '</h3></article>' +
+      '<article class="card"><p>Taylor share of Split</p><h3>' + escapeHtml(formatCurrencyValue(wantsActuals.taylorSplitShare)) + '</h3></article>' +
+      '<article class="card"><p>Josh overused amount</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.joshOverused)) + '</h3></article>' +
+      '<article class="card"><p>Taylor overused amount</p><h3>' + escapeHtml(formatCurrencyValue(transferPlan.taylorOverused)) + '</h3></article>' +
+      '</div>' +
+      renderWantsTable(wantsActuals.wantsRows) +
+      '</section>'
+      : '');
 
   page.innerHTML =
     '<div class="page-header">' +
@@ -529,12 +509,11 @@ export async function renderTransfers(container, period, periodLabel) {
     'taylor': 'Taylor',
     'discover': 'Discover',
     'debt-savings': 'Debt/Savings',
-    'boa-reserve': 'Bank of America Reserve',
   };
 
   function backendErrMsg(err) {
     return String(err.message || '').includes('Failed to fetch')
-      ? 'Backend not running on http://localhost:8787.'
+      ? 'Backend not reachable through the local API proxy.'
       : err.message;
   }
 
@@ -605,6 +584,4 @@ export async function renderTransfers(container, period, periodLabel) {
       }
     });
   });
-
-  // "Use Calculated" — populate input with the calculated rollover value (no save)
 }

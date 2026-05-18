@@ -9,6 +9,7 @@ import {
 import {
   getTransferConfirmations,
 } from '../api/transferConfirmationApi.js';
+import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -551,6 +552,9 @@ export async function renderDebtSnowball(container, period, periodLabel, periods
     let data = await getDebtSnowballData();
     const debts = Array.isArray(data?.debts) ? data.debts : [];
 
+    const ccSettings = await loadCommandCenterSettings().catch(() => null);
+    const dsFeat = (key) => isFeatureEnabled(ccSettings, 'debtSnowball', key);
+
     let transferConfirmations = [];
     try {
       const confData = await getTransferConfirmations(period.id, 'Debt/Savings');
@@ -608,18 +612,21 @@ export async function renderDebtSnowball(container, period, periodLabel, periods
       '%</strong></div><div><span>Remaining Balance</span><strong>' + escapeHtml(formatCurrency(summary.remainingBalance)) + '</strong></div><div><span>Total Starting Balance</span><strong>' + escapeHtml(formatCurrency(summary.totalStartingBalance)) +
       '</strong></div><div><span>Total Per-Period Payment</span><strong>' + escapeHtml(formatCurrency(summary.totalMonthlyPayment)) + '</strong></div><div class="muted-note">Debt minimum payments should match Recurring Bills categorized as Debt/Savings.</div>' +
       '<div><span>Total Interest</span><strong>' + escapeHtml(formatCurrency(summary.totalInterest)) + '</strong></div><div><span>Total Credit Utilization Rate</span><strong>' + escapeHtml(summary.totalCreditUtilizationRate === null ? '-' : summary.totalCreditUtilizationRate.toFixed(1) + '%') +
-      '</strong></div></div></section></section><section class="card debt-monthly-card"><div class="card-header"><h3 class="card-title">Payoff Schedule</h3></div><div class="table-wrap"><table class="table debt-monthly-table"><thead><tr><th>Pay Period</th><th>Date</th><th>Remaining Balance</th></tr></thead><tbody>' +
+      '</strong></div></div></section></section>' +
+      (dsFeat('showPayoffProjection') ? '<section class="card debt-monthly-card"><div class="card-header"><h3 class="card-title">Payoff Schedule</h3></div><div class="table-wrap"><table class="table debt-monthly-table"><thead><tr><th>Pay Period</th><th>Date</th><th>Remaining Balance</th></tr></thead><tbody>' +
       monthRows.map((row) => '<tr><td>' + escapeHtml(row.monthLabel) + '</td><td>' + escapeHtml(row.dateLabel) + '</td><td>' + escapeHtml(formatCurrency(row.remainingBalance)) + '</td></tr>').join('') +
-      '</tbody></table></div></section></aside><main class="debt-tracker-main"><section class="debt-main-top-row"><section class="card debt-distribution-card"><div class="card-header"><h3 class="card-title">Current Balance Distribution</h3></div>' +
-      renderDonut(plan.distribution) + '</section>' +
-      renderAvailableExtraPaymentShell({
+      '</tbody></table></div></section>' : '') +
+      '</aside><main class="debt-tracker-main"><section class="debt-main-top-row">' +
+      (dsFeat('showCurrentBalanceDistribution') ? '<section class="card debt-distribution-card"><div class="card-header"><h3 class="card-title">Current Balance Distribution</h3></div>' +
+      renderDonut(plan.distribution) + '</section>' : '') +
+      (dsFeat('showAvailableExtraDebtPayment') ? renderAvailableExtraPaymentShell({
         strategy: plan.strategy,
         periodLabel,
         confirmedTransferAmount,
         hasConfirmedTransfer: Boolean(confirmedDebtSavingsTransfer),
         suggestedRows: suggestedDebtPayments,
-      }) +
-      '</section><section class="card debt-grid-card"><div class="card-header"><h3 class="card-title">Debt Tracker Grid</h3></div><div class="debt-columns-scroll">' + renderDebtCards(plan) +
+      }) : '') +
+      '</section><section class="card debt-grid-card"><div class="card-header"><h3 class="card-title">Debt Tracker Grid</h3></div><div class="debt-columns-scroll">' + (dsFeat('showDebtAccounts') ? renderDebtCards(plan) : '') +
       '</div></section></main></div><details class="card debt-source-card" open><summary>Fill out your debt info in the table below. This page will automatically sort your debts from the smallest to highest balance.</summary><div class="table-wrap"><table class="table debt-source-table"><thead><tr><th>#</th><th>Debt Name</th><th>Start Balance</th><th>Min. Payment</th><th>Interest Rate</th><th>Credit Limit</th></tr></thead><tbody>' +
       sourceRows.map((row, idx) => '<tr data-debt-source-row><td>' + escapeHtml(String(idx + 1)) + '</td><td><input data-field="name" type="text" value="' + escapeHtml(row.name || '') + '"></td><td><input data-field="startingBalance" type="number" step="0.01" value="' + escapeHtml(String(row.startingBalance ?? '')) + '"></td><td><input data-field="minimumPayment" type="number" step="0.01" value="' + escapeHtml(String(row.minimumPayment ?? '')) + '"></td><td><input data-field="interestRate" type="number" step="0.01" value="' + escapeHtml(String(row.interestRate ?? '')) + '"></td><td><input data-field="creditLimit" type="number" step="0.01" value="' + escapeHtml(row.creditLimit === null || row.creditLimit === undefined ? '' : String(row.creditLimit)) + '"></td></tr>').join('') +
       '</tbody></table></div><div class="inline-actions"><button class="button button-primary" data-action="debt-save-table">Save Debt Table</button></div></details></div>';

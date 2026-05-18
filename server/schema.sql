@@ -55,6 +55,19 @@ CREATE TABLE IF NOT EXISTS transactions (
   updated_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS transaction_splits (
+  id TEXT PRIMARY KEY,
+  parent_transaction_id TEXT NOT NULL,
+  category TEXT NOT NULL,
+  subcategory TEXT,
+  amount REAL NOT NULL,
+  note TEXT,
+  display_order INTEGER DEFAULT 0,
+  is_final INTEGER DEFAULT 0,
+  created_at TEXT,
+  updated_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS budget_buckets (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -320,6 +333,12 @@ ON transactions(plaid_transaction_id);
 
 CREATE INDEX IF NOT EXISTS idx_transactions_item_id
 ON transactions(item_id);
+
+CREATE INDEX IF NOT EXISTS idx_transaction_splits_parent
+ON transaction_splits(parent_transaction_id, display_order);
+
+CREATE INDEX IF NOT EXISTS idx_transaction_splits_parent_final
+ON transaction_splits(parent_transaction_id, is_final);
 
 CREATE INDEX IF NOT EXISTS idx_history_period
 ON pay_period_snapshots(period_id);

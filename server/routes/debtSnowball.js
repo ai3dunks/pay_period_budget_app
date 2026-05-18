@@ -207,7 +207,7 @@ router.patch('/config', (req, res) => {
     saveConfig(next);
     res.json(next);
   } catch (err) {
-    res.status(400).json({ error: err.message || 'Invalid debt snowball config.' });
+    res.status(400).json({ error: 'Invalid debt snowball config.' });
   }
 });
 
@@ -243,7 +243,7 @@ router.post('/debts', (req, res) => {
     const debt = listDebts().find((row) => row.id === id);
     res.status(201).json(debt);
   } catch (err) {
-    res.status(400).json({ error: err.message || 'Failed to create debt.' });
+    res.status(400).json({ error: 'Failed to create debt.' });
   }
 });
 
@@ -285,7 +285,7 @@ router.patch('/debts/:id', (req, res) => {
     const debt = listDebts().find((row) => row.id === id);
     res.json(debt);
   } catch (err) {
-    res.status(400).json({ error: err.message || 'Failed to update debt.' });
+    res.status(400).json({ error: 'Failed to update debt.' });
   }
 });
 
@@ -299,7 +299,7 @@ router.delete('/debts/:id', (req, res) => {
     db.prepare('DELETE FROM debt_snowball_debts WHERE id = ?').run(id);
     res.json({ ok: true, id });
   } catch (err) {
-    res.status(500).json({ error: err.message || 'Failed to delete debt.' });
+    res.status(500).json({ error: 'Failed to delete debt.' });
   }
 });
 
@@ -371,7 +371,7 @@ router.post('/debts/replace', (req, res) => {
     tx();
     res.json({ debts: listDebts() });
   } catch (err) {
-    res.status(400).json({ error: err.message || 'Failed to replace debts.' });
+    res.status(400).json({ error: 'Failed to replace debts.' });
   }
 });
 
@@ -424,7 +424,7 @@ router.post('/debts/:id/create-recurring-bill', (req, res) => {
 
     res.status(201).json({ linked: true, recurringBill });
   } catch (err) {
-    res.status(500).json({ error: err.message || 'Failed to create recurring bill link.' });
+    res.status(500).json({ error: 'Failed to create recurring bill link.' });
   }
 });
 
@@ -481,7 +481,7 @@ router.get('/snowball-transfers', (req, res) => {
     ).all(periodId);
     res.json({ transfers: rows.map(toTransferRow) });
   } catch (err) {
-    res.status(500).json({ error: err.message || 'Failed to load transfer confirmations.' });
+    res.status(500).json({ error: 'Failed to load transfer confirmations.' });
   }
 });
 
@@ -508,7 +508,7 @@ router.post('/snowball-transfers', (req, res) => {
     const row = db.prepare('SELECT * FROM debt_savings_transfer_confirmations WHERE id = ?').get(id);
     res.status(201).json(toTransferRow(row));
   } catch (err) {
-    res.status(400).json({ error: err.message || 'Failed to create transfer confirmation.' });
+    res.status(400).json({ error: 'Failed to create transfer confirmation.' });
   }
 });
 
@@ -541,7 +541,7 @@ router.patch('/snowball-transfers/:id', (req, res) => {
     const row = db.prepare('SELECT * FROM debt_savings_transfer_confirmations WHERE id = ?').get(id);
     res.json(toTransferRow(row));
   } catch (err) {
-    res.status(400).json({ error: err.message || 'Failed to update transfer confirmation.' });
+    res.status(400).json({ error: 'Failed to update transfer confirmation.' });
   }
 });
 
@@ -557,7 +557,7 @@ router.delete('/snowball-transfers/:id', (req, res) => {
     db.prepare('DELETE FROM debt_savings_transfer_confirmations WHERE id = ?').run(id);
     res.json({ ok: true, id });
   } catch (err) {
-    res.status(500).json({ error: err.message || 'Failed to delete transfer confirmation.' });
+    res.status(500).json({ error: 'Failed to delete transfer confirmation.' });
   }
 });
 
@@ -572,7 +572,7 @@ router.get('/payment-plans', (req, res) => {
     ).all(periodId);
     res.json({ plans: rows.map(toPaymentPlanRow) });
   } catch (err) {
-    res.status(500).json({ error: err.message || 'Failed to load payment plans.' });
+    res.status(500).json({ error: 'Failed to load payment plans.' });
   }
 });
 
@@ -602,7 +602,7 @@ router.post('/payment-plans', (req, res) => {
     const row = db.prepare('SELECT * FROM debt_snowball_payment_plans WHERE id = ?').get(id);
     res.status(201).json(toPaymentPlanRow(row));
   } catch (err) {
-    res.status(400).json({ error: err.message || 'Failed to create payment plan.' });
+    res.status(400).json({ error: 'Failed to create payment plan.' });
   }
 });
 
@@ -634,7 +634,7 @@ router.patch('/payment-plans/:id/confirm', (req, res) => {
     const updatedPlan = db.prepare('SELECT * FROM debt_snowball_payment_plans WHERE id = ?').get(id);
     res.json({ plan: toPaymentPlanRow(updatedPlan), leftover });
   } catch (err) {
-    res.status(400).json({ error: err.message || 'Failed to confirm payment.' });
+    res.status(400).json({ error: 'Failed to confirm payment.' });
   }
 });
 
@@ -648,7 +648,7 @@ router.patch('/payment-plans/:id/hold', (req, res) => {
     const updatedPlan = db.prepare('SELECT * FROM debt_snowball_payment_plans WHERE id = ?').get(id);
     res.json(toPaymentPlanRow(updatedPlan));
   } catch (err) {
-    res.status(400).json({ error: err.message || 'Failed to update payment plan.' });
+    res.status(400).json({ error: 'Failed to update payment plan.' });
   }
 });
 
@@ -661,7 +661,7 @@ router.delete('/payment-plans/:id', (req, res) => {
     db.prepare('DELETE FROM debt_snowball_payment_plans WHERE id = ?').run(id);
     res.json({ ok: true, id });
   } catch (err) {
-    res.status(500).json({ error: err.message || 'Failed to delete payment plan.' });
+    res.status(500).json({ error: 'Failed to delete payment plan.' });
   }
 });
 

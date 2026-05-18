@@ -4,6 +4,7 @@ import {
 } from '../utils/budgetCalculations.js';
 import { buildPayPeriodSummary } from '../utils/payPeriodSummary.js';
 import { getDetectedPayrollIncome } from '../utils/payrollDetection.js';
+import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
 import {
   getBudgetBuckets,
   createBudgetBucket,
@@ -12,7 +13,7 @@ import {
   assignTransactionToBucket,
 } from '../api/budgetBucketsApi.js';
 
-const BACKEND = 'http://localhost:8787';
+const BACKEND = '';
 const BUDGET_SPLIT_GROUPS = ['Needs', 'Wants', 'Debts/Savings'];
 
 function formatBudgetSplitGroupLabel(group) {
@@ -297,6 +298,7 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
       splitSettingsRaw,
       safeMoneySettings,
       bucketsPayload,
+      ccSettings,
     ] = await Promise.all([
       fetchMasterLists(),
       fetchTransactions(),
@@ -306,7 +308,9 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
       fetchSetting('budget_split_settings'),
       fetchSetting('safe_money_settings'),
       fetchBudgetBucketsForPeriod(period).catch(() => ({ rows: [], groupTotals: {}, unassignedSpending: { count: 0, total: 0, transactions: [] } })),
+      loadCommandCenterSettings().catch(() => null),
     ]);
+    const ppFeat = (key) => isFeatureEnabled(ccSettings, 'paycheckPlanner', key);
 
     const expenseList = masterLists.expenseList || [];
     const recurringBillsList = masterLists.recurringBillsList || [];
@@ -335,7 +339,6 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
     });
     const safeMoney = summary.safeMoney || {
       safetyBuffer: 0,
-      includeBoaRolloverInSafeToSpend: true,
       includePendingTransactions: false,
       pendingNote: 'Pending transactions excluded.',
       safeToSpend: { amount: summary.safeToSpend, status: 'warning', blockers: [], warnings: [], breakdown: {} },
@@ -370,19 +373,19 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
       ? formatShortDate(summary.income.selectedPayrollTransaction.date)
       : null;
 
-    const detectedPayrollLine = detectedPayroll.detected
+    const detectedPayrollLine = (!ppFeat('showDetectedPayrollIncome') ? '' : detectedPayroll.detected
       ? '<p><strong>Detected Cisco payroll:</strong> ' + escapeHtml(formatCurrencyValue(autoIncome)) + '</p>'
-      : '<p><strong>No Cisco payroll found for this budget period.</strong></p>';
+      : '<p><strong>No Cisco payroll found for this budget period.</strong></p>');
 
     const detectedPayrollWarningLine = summary.income.payrollWarning
       ? '<p class="muted-note"><strong>' + escapeHtml(summary.income.payrollWarning + (selectedPayrollDateLabel ? ' Using latest paycheck dated ' + selectedPayrollDateLabel + '.' : '')) + '</strong></p>'
       : '';
 
-    const manualOverrideLine = hasManualIncome
+    const manualOverrideLine = (!ppFeat('showManualOverride') ? '' : hasManualIncome
       ? '<p><strong>Manual income override active.</strong></p>'
-      : '<p class="muted-note">Manual override is not active.</p>';
+      : '<p class="muted-note">Manual override is not active.</p>');
 
-    const incomeBreakdownDetails =
+    const incomeBreakdownDetails = !ppFeat('showIncomeBreakdown') ? '' :
       '<details class="safe-money-disclosure"><summary>How calculated</summary>' +
       '<div class="safe-money-breakdown">' +
       '<div class="action-row"><span>Selected Budget Period</span><strong>' + escapeHtml(periodLabel) + '</strong></div>' +
@@ -424,7 +427,6 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
       '</div>' +
       '<details class="safe-money-disclosure"><summary>Calculation details</summary>' +
       '<div class="safe-money-breakdown">' +
-      '<div class="action-row"><span>Include BOA rollover in safe to spend</span><strong>' + escapeHtml(safeMoney.includeBoaRolloverInSafeToSpend ? 'Yes' : 'No') + '</strong></div>' +
       '<div class="action-row"><span>Include pending transactions</span><strong>' + escapeHtml(safeMoney.includePendingTransactions ? 'Yes' : 'No') + '</strong></div>' +
       (safeSpend.warnings?.length ? '<div class="dashboard-alert warning"><strong>Spend notes</strong><div>' + safeSpend.warnings.map((line) => '<div>' + escapeHtml(line) + '</div>').join('') + '</div></div>' : '') +
       (safeSpend.blockers?.length ? '<div class="dashboard-alert danger"><strong>Spend blockers</strong><div>' + safeSpend.blockers.map((line) => '<div>' + escapeHtml(line) + '</div>').join('') + '</div></div>' : '') +
@@ -684,7 +686,7 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
         if (messageEl) {
           messageEl.className = 'settings-message error';
           messageEl.textContent = err.message.includes('Failed to fetch')
-            ? 'Backend not running on http://localhost:8787.'
+            ? 'Backend not reachable through the local API proxy.'
             : err.message;
         }
       }
@@ -758,7 +760,7 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
         if (messageEl) {
           messageEl.className = 'settings-message error';
           messageEl.textContent = err.message.includes('Failed to fetch')
-            ? 'Backend not running on http://localhost:8787.'
+            ? 'Backend not reachable through the local API proxy.'
             : err.message;
         }
       } finally {
@@ -792,7 +794,7 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
         if (messageEl) {
           messageEl.className = 'settings-message error';
           messageEl.textContent = err.message.includes('Failed to fetch')
-            ? 'Backend not running on http://localhost:8787.'
+            ? 'Backend not reachable through the local API proxy.'
             : err.message;
         }
       }
@@ -905,7 +907,7 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
           setBucketMessage(false, 'Bucket created.');
           await renderPaycheckPlanner(container, period, periodLabel);
         } catch (err) {
-          setBucketMessage(true, err.message.includes('Failed to fetch') ? 'Backend not running on http://localhost:8787.' : err.message);
+          setBucketMessage(true, err.message.includes('Failed to fetch') ? 'Backend not reachable through the local API proxy.' : err.message);
         }
       });
     });
@@ -936,7 +938,7 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
           setBucketMessage(false, 'Bucket updated.');
           await renderPaycheckPlanner(container, period, periodLabel);
         } catch (err) {
-          setBucketMessage(true, err.message.includes('Failed to fetch') ? 'Backend not running on http://localhost:8787.' : err.message);
+          setBucketMessage(true, err.message.includes('Failed to fetch') ? 'Backend not reachable through the local API proxy.' : err.message);
         }
       });
     });
@@ -953,7 +955,7 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
           setBucketMessage(false, 'Bucket deleted. Assigned transactions are now unassigned.');
           await renderPaycheckPlanner(container, period, periodLabel);
         } catch (err) {
-          setBucketMessage(true, err.message.includes('Failed to fetch') ? 'Backend not running on http://localhost:8787.' : err.message);
+          setBucketMessage(true, err.message.includes('Failed to fetch') ? 'Backend not reachable through the local API proxy.' : err.message);
         }
       });
     });
@@ -981,7 +983,7 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
           setBucketMessage(false, 'Transaction assigned to bucket.');
           await renderPaycheckPlanner(container, period, periodLabel);
         } catch (err) {
-          setBucketMessage(true, err.message.includes('Failed to fetch') ? 'Backend not running on http://localhost:8787.' : err.message);
+          setBucketMessage(true, err.message.includes('Failed to fetch') ? 'Backend not reachable through the local API proxy.' : err.message);
         }
       });
     });
@@ -1019,7 +1021,7 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
     container.innerHTML =
       '<section class="card"><div class="error-card">' +
       (String(err.message || '').includes('Failed to fetch')
-        ? 'Backend not running on http://localhost:8787.'
+        ? 'Backend not reachable through the local API proxy.'
         : 'Paycheck Planner could not be loaded.') +
       '</div></section>';
   }

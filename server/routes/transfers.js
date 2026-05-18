@@ -48,7 +48,7 @@ router.get('/confirmations', (req, res) => {
     const rows = db.prepare(query).all(...params);
     res.json({ confirmations: rows.map(toTransferConfirmationRow) });
   } catch (err) {
-    res.status(500).json({ error: err.message || 'Failed to fetch transfer confirmations' });
+    res.status(500).json({ error: 'Failed to fetch transfer confirmations' });
   }
 });
 
@@ -89,7 +89,7 @@ router.post('/confirmations', (req, res) => {
     const row = db.prepare('SELECT * FROM transfer_confirmations WHERE id = ?').get(id);
     res.json({ confirmation: toTransferConfirmationRow(row) });
   } catch (err) {
-    res.status(500).json({ error: err.message || 'Failed to create transfer confirmation' });
+    res.status(500).json({ error: 'Failed to create transfer confirmation' });
   }
 });
 
@@ -141,7 +141,7 @@ router.patch('/confirmations/:id', (req, res) => {
     const row = db.prepare('SELECT * FROM transfer_confirmations WHERE id = ?').get(id);
     res.json({ confirmation: toTransferConfirmationRow(row) });
   } catch (err) {
-    res.status(500).json({ error: err.message || 'Failed to update transfer confirmation' });
+    res.status(500).json({ error: 'Failed to update transfer confirmation' });
   }
 });
 
@@ -153,7 +153,7 @@ router.delete('/confirmations/:id', (req, res) => {
     db.prepare('DELETE FROM transfer_confirmations WHERE id = ?').run(id);
     res.json({ ok: true, id });
   } catch (err) {
-    res.status(500).json({ error: err.message || 'Failed to delete transfer confirmation' });
+    res.status(500).json({ error: 'Failed to delete transfer confirmation' });
   }
 });
 

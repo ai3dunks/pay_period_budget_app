@@ -10,7 +10,6 @@ import { isDateInBudgetPeriod, parseLocalDate } from './budgetPeriods.js';
 import { calculateBudgetSplit, calculateTransferPlan, calculateWantsActuals } from './transfers.js';
 import { calculateExpenseBudget } from './expenses.js';
 import { calculateRecurringBillsDue } from './recurringBills.js';
-import { calculateBoaRolloverFromLastPrePaycheckTransaction } from './boaRollover.js';
 import { getDetectedPayrollIncome, isCiscoPayrollTransaction } from './payrollDetection.js';
 import { calculateSafeToSpend, calculateSafeToTransfer } from './safeMoney.js';
 import { toNumber } from './money.js';
@@ -21,7 +20,6 @@ export { calculateSafeToSpend, calculateSafeToTransfer } from './safeMoney.js';
 const DEFAULT_BUDGET_SPLIT = { Needs: 60, Wants: 20, 'Debts/Savings': 20 };
 const DEFAULT_SAFE_MONEY_SETTINGS = {
   safetyBuffer: 100,
-  includeBoaRolloverInSafeToSpend: true,
   includePendingTransactions: false,
 };
 const BOA_NAME_PATTERNS = ['bank of america', 'boa', 'bofa'];
@@ -61,10 +59,6 @@ function getSafeMoneySettings(settings) {
         DEFAULT_SAFE_MONEY_SETTINGS.safetyBuffer
       )
     ),
-    includeBoaRolloverInSafeToSpend:
-      source.includeBoaRolloverInSafeToSpend ??
-      source.include_boa_rollover_in_safe_to_spend ??
-      DEFAULT_SAFE_MONEY_SETTINGS.includeBoaRolloverInSafeToSpend,
     includePendingTransactions:
       source.includePendingTransactions ??
       source.include_pending_transactions ??
@@ -154,6 +148,59 @@ function getPeriodTransactions(period, transactions = [], includePendingTransact
     if (!includePendingTransactions && row.pending) return false;
     return isDateInBudgetPeriod(row.date, period);
   });
+}
+
+function getFinalSplitLines(transaction) {
+  const splitLines = Array.isArray(transaction?.split_lines) ? transaction.split_lines : [];
+  if (!splitLines.length) return [];
+  if (transaction?.split_is_final !== true) return [];
+  return splitLines
+    .map((line) => {
+      const category = String(line?.category || '').trim();
+      const amount = toNumber(line?.amount, 0);
+      if (!category || amount <= 0) return null;
+      return {
+        category,
+        subcategory: String(line?.subcategory || '').trim(),
+        note: String(line?.note || '').trim(),
+        amount,
+      };
+    })
+    .filter(Boolean);
+}
+
+function expandExpenseTransactionsWithSplits(transactions = []) {
+  const expanded = [];
+
+  for (const transaction of transactions) {
+    if (normalizeText(transaction?.type) !== 'expense') {
+      expanded.push(transaction);
+      continue;
+    }
+
+    const splitLines = getFinalSplitLines(transaction);
+    if (!splitLines.length) {
+      expanded.push(transaction);
+      continue;
+    }
+
+    const parentAmount = toNumber(transaction.amount, 0);
+    const signedDirection = parentAmount < 0 ? -1 : 1;
+
+    for (const split of splitLines) {
+      expanded.push({
+        ...transaction,
+        category: split.category,
+        subcategory: split.subcategory,
+        split_note: split.note,
+        amount: signedDirection * Math.abs(split.amount),
+        split_parent_transaction_id: transaction.id,
+        split_is_line: true,
+      });
+    }
+  }
+
+  return expanded;
 }
 
 function isInSelectedPeriod(dateValue, period) {
@@ -304,9 +351,6 @@ export function buildPayPeriodSummary({
     const statusLabel = isPaid ? 'Paid' : dueDateIso && dueDateIso < todayIso ? 'Overdue' : 'Unpaid';
 
     const paidFrom = String(bill.paidFrom || '').trim();
-    const paidFromKey = normalizeText(paidFrom);
-    const isBoaReserve =
-      !paidFromKey || paidFromKey.includes('boa') || paidFromKey.includes('bank of america');
 
     return {
       id: bill.id,
@@ -325,7 +369,6 @@ export function buildPayPeriodSummary({
       status: bill.status || null,
       statusLabel,
       paidTransactionId: bill.status?.matchTransactionId || null,
-      isBoaReserve,
     };
   });
 
@@ -338,8 +381,8 @@ export function buildPayPeriodSummary({
   // ── Expenses ───────────────────────────────────────────────────────────────
   const expenseBudget = calculateExpenseBudget(expenseList);
   const expenseRowsByCategory = new Map();
-  const expenseTransactions = periodTransactions.filter(
-    (row) => normalizeText(row.type) === 'expense'
+  const expenseTransactions = expandExpenseTransactionsWithSplits(
+    periodTransactions.filter((row) => normalizeText(row.type) === 'expense')
   );
   for (const row of expenseTransactions) {
     const key = normalizeText(row.category || 'uncategorized');
@@ -369,29 +412,6 @@ export function buildPayPeriodSummary({
   // ── Wants + transfers ──────────────────────────────────────────────────────
   const wantsActuals = calculateWantsActuals({ transactions: periodTransactions, period });
 
-  const rolloverCalc = calculateBoaRolloverFromLastPrePaycheckTransaction({
-    accounts,
-    transactions,
-    selectedPeriod: period,
-  });
-  const rolloverAmount = toNumber(rolloverCalc?.amount, 0);
-
-  const rollover = {
-    amount: rolloverAmount,
-    date: rolloverCalc?.rolloverDate || null,
-    source: rolloverCalc?.canCalculate ? 'last-pre-paycheck-running-balance' : 'unavailable',
-    warning: rolloverCalc?.warning || null,
-    lastTransaction: rolloverCalc?.lastTransactionId
-      ? {
-          id: rolloverCalc.lastTransactionId,
-          date: rolloverCalc.lastTransactionDate,
-          description: rolloverCalc.lastTransactionDescription,
-          amount: toNumber(rolloverCalc.lastTransactionAmount, 0),
-          runningBalance: rolloverCalc.lastTransactionBalance,
-        }
-      : null,
-  };
-
   const splitSummary = calculateBudgetSplit({
     budgetIncome,
     recurringBillsDue: recurringDue.billsDue,
@@ -402,7 +422,6 @@ export function buildPayPeriodSummary({
     splitSummary,
     expenseBudget,
     wantsActuals,
-    boaReserve: recurringDue.boaReserve,
   });
 
   // ── Safe money ─────────────────────────────────────────────────────────────
@@ -416,8 +435,6 @@ export function buildPayPeriodSummary({
 
   const safeToSpend = calculateSafeToSpend({
     budgetIncome,
-    rolloverAmount,
-    rolloverWarning: rolloverCalc?.warning,
     recurringBillsLeftToPay: dueTotal,
     expenseBudgetRemaining: expenseBudget.totalExpenseBudget - actualTotal,
     expenseOverrun: Math.max(0, actualTotal - budgetTotal),
@@ -427,18 +444,13 @@ export function buildPayPeriodSummary({
       Math.max(0, transferPlan.discoverTransfer) +
       Math.max(0, transferPlan.debtSavingsTransfer),
     safetyBuffer: safeMoneySettings.safetyBuffer,
-    includeBoaRolloverInSafeToSpend: safeMoneySettings.includeBoaRolloverInSafeToSpend,
     includePendingTransactions,
   });
 
   const safeToTransfer = calculateSafeToTransfer({
     boaAccount,
     boaCurrentBalance: boaAccount ? boaAccount.balanceCurrent : null,
-    unpaidBoaBills: recurringDue.unpaidBoaReserveBills.reduce(
-      (sum, bill) => sum + toNumber(bill.amount, 0),
-      0
-    ),
-    boaReserve: recurringDue.boaReserve,
+    unpaidBoaBills: recurringDue.unpaidTotal,
     pendingBoaSpending,
     safetyBuffer: safeMoneySettings.safetyBuffer,
     includePendingTransactions,
@@ -453,8 +465,7 @@ export function buildPayPeriodSummary({
 
   const alerts = [];
   if (budgetIncome <= 0) alerts.push('No income found for the selected budget period.');
-  if (rollover.warning) alerts.push(rollover.warning);
-  if (dueTotal > budgetIncome + Math.max(0, rolloverAmount)) {
+  if (dueTotal > budgetIncome) {
     alerts.push('Recurring bills due exceed income for this budget period.');
   }
   if (remaining < 0) alerts.push('Expense spending is over budget for this period.');
@@ -489,7 +500,6 @@ export function buildPayPeriodSummary({
       ignoredDuplicatePayrollTransactions,
       payrollWarning: detectedPayroll.warning || null,
     },
-    rollover,
     recurringBills: {
       dueTotal,
       paidTotal,
@@ -528,12 +538,10 @@ export function buildPayPeriodSummary({
       taylor: transferPlan.taylorTransfer,
       discover: transferPlan.discoverTransfer,
       debtSavings: transferPlan.debtSavingsTransfer,
-      boaReserve: transferPlan.boaReserve,
       alerts: transferAlerts,
     },
     safeMoney: {
       safetyBuffer: safeMoneySettings.safetyBuffer,
-      includeBoaRolloverInSafeToSpend: safeMoneySettings.includeBoaRolloverInSafeToSpend,
       includePendingTransactions,
       pendingNote: includePendingTransactions
         ? 'Pending transactions included.'

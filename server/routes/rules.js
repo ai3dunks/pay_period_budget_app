@@ -137,7 +137,7 @@ router.post('/', (req, res) => {
     res.status(201).json(db.prepare('SELECT * FROM transaction_rules WHERE id = ?').get(id));
   } catch (err) {
     console.error('POST /api/rules error:', err);
-    res.status(400).json({ error: err.message || 'Failed to create rule.' });
+    res.status(400).json({ error: 'Failed to create rule.' });
   }
 });
 
@@ -167,7 +167,7 @@ router.patch('/:id', (req, res) => {
     res.json(db.prepare('SELECT * FROM transaction_rules WHERE id = ?').get(req.params.id));
   } catch (err) {
     console.error('PATCH /api/rules/:id error:', err);
-    res.status(400).json({ error: err.message || 'Failed to update rule.' });
+    res.status(400).json({ error: 'Failed to update rule.' });
   }
 });
 

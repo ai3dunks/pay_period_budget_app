@@ -1,4 +1,4 @@
-const BACKEND = 'http://localhost:8787';
+const BACKEND = '';
 
 async function fetchJson(path, options = {}) {
   const response = await fetch(BACKEND + path, options);

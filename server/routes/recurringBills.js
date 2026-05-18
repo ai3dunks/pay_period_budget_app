@@ -160,10 +160,10 @@ function isTransactionCandidateForBill(tx, periodStart, periodEnd, dueDate) {
 
 function scoreRecurringBillPaymentMatch(bill, transaction, dueDate, alreadyMatchedTransactionIds) {
   if (alreadyMatchedTransactionIds.has(transaction.id)) return { score: -100, method: 'already_matched' };
-  if (isIgnoredIncomeOrTransfer(transaction)) return { score: -100, method: 'ignored_or_income_or_transfer' };
+  if (transaction._isIgnoredIncomeOrTransfer ?? isIgnoredIncomeOrTransfer(transaction)) return { score: -100, method: 'ignored_or_income_or_transfer' };
 
-  const txSearchText = buildTransactionSearchText(transaction);
-  if (isCiscoPayrollTransaction(transaction)) return { score: -100, method: 'payroll' };
+  const txSearchText = transaction._searchText || buildTransactionSearchText(transaction);
+  if (transaction._isCiscoPayroll ?? isCiscoPayrollTransaction(transaction)) return { score: -100, method: 'payroll' };
 
   const billAmount = Math.abs(Number(bill.amount || 0));
   const txAmount = Math.abs(Number(transaction.amount || 0));
@@ -305,7 +305,13 @@ router.post('/auto-detect', (req, res) => {
          WHERE date >= ? AND date < ?
          ORDER BY date DESC`
       )
-      .all(startDate, queryEndIso);
+      .all(startDate, queryEndIso)
+      .map((tx) => ({
+        ...tx,
+        _searchText: buildTransactionSearchText(tx),
+        _isIgnoredIncomeOrTransfer: isIgnoredIncomeOrTransfer(tx),
+        _isCiscoPayroll: isCiscoPayrollTransaction(tx),
+      }));
 
     const period = {
       id: periodId,
@@ -467,7 +473,7 @@ router.post('/auto-detect', (req, res) => {
     });
   } catch (err) {
     console.error('Error in auto-detect:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to auto-detect recurring bills.' });
   }
 });
 
@@ -526,7 +532,7 @@ router.get('/status', (req, res) => {
     res.json(status);
   } catch (err) {
     console.error('Error fetching recurring bill status:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to fetch recurring bill status.' });
   }
 });
 
@@ -586,7 +592,7 @@ router.patch('/status', (req, res) => {
     });
   } catch (err) {
     console.error('Error updating recurring bill status:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to update recurring bill status.' });
   }
 });
 

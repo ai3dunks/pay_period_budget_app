@@ -1,4 +1,6 @@
-const BACKEND = 'http://localhost:8787';
+import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
+
+const BACKEND = '';
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -17,7 +19,6 @@ function sectionTitle(sectionKey) {
     recurringBills: 'Recurring Bills',
     transfers: 'Transfers',
     expenses: 'Expenses',
-    rollover: 'Rollover',
     rules: 'Rules',
     backups: 'Backups',
     database: 'Database',
@@ -89,7 +90,7 @@ function renderSummary(report) {
 }
 
 function renderSectionCards(sections = {}) {
-  const keys = ['plaid', 'transactions', 'income', 'recurringBills', 'transfers', 'expenses', 'rollover', 'rules', 'backups', 'database'];
+  const keys = ['plaid', 'transactions', 'income', 'recurringBills', 'transfers', 'expenses', 'rules', 'backups', 'database'];
   return (
     '<section class="data-health-sections-grid">' +
     keys.map((key) => {
@@ -155,10 +156,21 @@ export async function renderDataHealth(container, period, options = {}) {
     const report = await readJsonResponseOrThrow(res);
     if (!res.ok) throw new Error(report.error || 'Failed to load data health report.');
 
+    const ccSettings = await loadCommandCenterSettings().catch(() => null);
+    const dhFeat = (key) => isFeatureEnabled(ccSettings, 'dataHealth', key);
+
+    // Filter sections based on feature flags
+    const filteredSections = { ...report.sections };
+    if (!dhFeat('showPlaidHealth')) delete filteredSections.plaid;
+    if (!dhFeat('showClassificationHealth')) { delete filteredSections.transactions; delete filteredSections.income; }
+    if (!dhFeat('showSplitHealth')) delete filteredSections.splits;
+    if (!dhFeat('showBillMatchHealth')) delete filteredSections.recurringBills;
+    if (!dhFeat('showTransferHealth')) delete filteredSections.transfers;
+
     container.innerHTML =
       '<div class="dashboard-page data-health-page">' +
       renderSummary(report) +
-      renderSectionCards(report.sections || {}) +
+      renderSectionCards(filteredSections) +
       renderIssues(report.issues || []) +
       '</div>';
 

@@ -3,8 +3,9 @@ import { loadBudgetContext } from '../utils/loadBudgetContext.js';
 import { fetchCloseoutRecord } from '../utils/closeoutClient.js';
 import { calculateFlexibleBudgetSplitEngine } from '../utils/budgetCalculations.js';
 import { loadCashFlowForecast } from '../utils/cashFlowForecast.js';
+import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
 
-const BACKEND = 'http://localhost:8787';
+const BACKEND = '';
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -121,7 +122,6 @@ function renderPrimaryCards(summary) {
     },
     { label: 'Bills Left', value: summary.recurringBills.unpaidTotal, tone: Number(summary.recurringBills.unpaidTotal || 0) > Number(summary.income.budgetIncome || 0) ? 'warning' : 'good', subtext: [summary.recurringBills.unpaidCount + ' unpaid bill' + (summary.recurringBills.unpaidCount === 1 ? '' : 's'), recurringNext ? 'Next unpaid: ' + recurringNext.billName + ' ' + (recurringNext.dueDateLabel || recurringNext.dueDate || '') : 'No unpaid bills left'] },
     { label: 'Expense Remaining', value: summary.expenses.remaining, tone: Number(summary.expenses.remaining || 0) < 0 ? 'danger' : 'good', subtext: ['Actual ' + formatMoney(summary.expenses.actualTotal), 'Budget ' + formatMoney(summary.expenses.budgetTotal), expenseOverBudgetCount ? expenseOverBudgetCount + ' category' + (expenseOverBudgetCount === 1 ? '' : 'ies') + ' over budget' : 'No categories over budget'] },
-    { label: 'BOA Rollover', value: summary.rollover.amount, tone: !Number.isFinite(Number(summary.rollover.amount)) || !!summary.rollover.warning ? 'warning' : 'good', unavailable: !Number.isFinite(Number(summary.rollover.amount)) || !!summary.rollover.warning, subtext: summary.rollover.warning ? [summary.rollover.warning] : ['Shared rollover from last BOA transaction before paycheck.'] },
   ];
 
   return (
@@ -174,7 +174,6 @@ function renderTransferActions(summary) {
     { label: 'Taylor transfer needed', value: summary.transfers.taylor },
     { label: 'Discover transfer needed', value: summary.transfers.discover },
     { label: 'Debt/Savings transfer needed', value: summary.transfers.debtSavings },
-    { label: 'BOA reserve', value: summary.transfers.boaReserve },
   ];
 
   return (
@@ -606,6 +605,8 @@ export async function renderDashboard(container, options = {}) {
     ]);
 
     const rulesPreview = rulesPreviewRes ? await rulesPreviewRes.json().catch(() => ({ matchedCount: 0 })) : { matchedCount: 0 };
+    const ccSettings = await loadCommandCenterSettings().catch(() => null);
+    const feat = (key) => isFeatureEnabled(ccSettings, 'dashboard', key);
     const summary = buildPayPeriodSummary(context);
     const reviewStats = {
       unreviewedCount: context.transactions.filter((row) => !row.reviewed && !row.ignored).length,
@@ -640,15 +641,15 @@ export async function renderDashboard(container, options = {}) {
       '<div class="dashboard-page">' +
       renderTopBar({ period: summary.period, dataHealthLabel, dataHealthStatus, lastSyncLabel, syncState, closeoutStatus }) +
       renderCommandStrip() +
-      '<section class="dashboard-primary-grid">' + renderPrimaryCards(summary) + '</section>' +
+      (feat('showPayPeriodCard') ? '<section class="dashboard-primary-grid">' + renderPrimaryCards(summary) + '</section>' : '') +
       '<section class="dashboard-secondary-grid">' +
       '<div class="dashboard-secondary-column">' +
-      renderBudgetSplitSummary(splitSummary) +
-      renderEnvelopeSummary({ splitSummary, bucketSummary }) +
+      (feat('showBudgetSummaryCards') ? renderBudgetSplitSummary(splitSummary) : '') +
+      (feat('showBudgetSummaryCards') ? renderEnvelopeSummary({ splitSummary, bucketSummary }) : '') +
       renderReviewQueue(reviewStats, hasRulesEngine) +
       renderBillsAttention(summary) +
       '</div>' +
-      '<div class="dashboard-secondary-column">' + renderCashFlowForecastCard(cashFlowForecast) + renderTransferActions(summary) + renderSpendingWatchlists(summary) + renderReportsPreview(reportsSummary) + renderNextBestActions(nextActions) + '</div>' +
+      '<div class="dashboard-secondary-column">' + (feat('showCashFlowPreview') ? renderCashFlowForecastCard(cashFlowForecast) : '') + (feat('showTransferSummaryCard') ? renderTransferActions(summary) : '') + (feat('showBudgetSummaryCards') ? renderSpendingWatchlists(summary) : '') + (feat('showDebtPreview') ? renderReportsPreview(reportsSummary) : '') + renderNextBestActions(nextActions) + '</div>' +
       '</section>' +
       '</div>' +
       (closeoutRecord && String(closeoutRecord.status || '').toLowerCase() === 'closed' ? '<div class="closeout-warning">Pay period closed.</div>' : '') +
@@ -666,6 +667,6 @@ export async function renderDashboard(container, options = {}) {
     });
   } catch (err) {
     console.error('Dashboard render failed:', err);
-    container.innerHTML = '<section class="card"><div class="error-card">Backend not running on http://localhost:8787.<br><small>' + escapeHtml(err.message || 'Unknown error') + '</small></div></section>';
+    container.innerHTML = '<section class="card"><div class="error-card">Backend not reachable through the local API proxy.<br><small>' + escapeHtml(err.message || 'Unknown error') + '</small></div></section>';
   }
 }

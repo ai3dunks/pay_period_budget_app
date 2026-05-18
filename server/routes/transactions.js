@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { randomUUID } from 'crypto';
 import db, { safeSqlValue } from '../db.js';
 
 const router = Router();
@@ -25,6 +26,87 @@ const SORT_MAP = {
   unreviewed_first: 't.reviewed ASC, t.date DESC',
 };
 
+function toCents(value) {
+  return Math.round(Number(value || 0) * 100);
+}
+
+function normalizeMoney(value) {
+  return toCents(value) / 100;
+}
+
+function attachSplitData(rows) {
+  const nextRows = Array.isArray(rows) ? rows.slice() : [];
+  if (!nextRows.length) return nextRows;
+
+  const parentIds = nextRows.map((row) => String(row.id || '')).filter(Boolean);
+  if (!parentIds.length) return nextRows;
+
+  const placeholders = parentIds.map(() => '?').join(', ');
+  const splitRows = db.prepare(
+    'SELECT id, parent_transaction_id, category, subcategory, amount, note, display_order, is_final, created_at, updated_at ' +
+    'FROM transaction_splits WHERE parent_transaction_id IN (' + placeholders + ') ORDER BY display_order ASC, created_at ASC'
+  ).all(...parentIds);
+
+  const byParentId = new Map();
+  for (const split of splitRows) {
+    const parentId = String(split.parent_transaction_id || '');
+    if (!byParentId.has(parentId)) byParentId.set(parentId, []);
+    byParentId.get(parentId).push({
+      id: split.id,
+      parentTransactionId: parentId,
+      category: split.category || '',
+      subcategory: split.subcategory || '',
+      amount: normalizeMoney(split.amount),
+      note: split.note || '',
+      displayOrder: Number(split.display_order || 0),
+      isFinal: Number(split.is_final || 0) === 1,
+      createdAt: split.created_at || null,
+      updatedAt: split.updated_at || null,
+    });
+  }
+
+  return nextRows.map((row) => {
+    const parentId = String(row.id || '');
+    const splitLines = byParentId.get(parentId) || [];
+    const splitTotal = splitLines.reduce((sum, split) => sum + normalizeMoney(split.amount), 0);
+    const targetTotal = Math.abs(normalizeMoney(row.amount));
+    const splitDelta = normalizeMoney(splitTotal - targetTotal);
+    const splitIsFinal = splitLines.length > 0 ? splitLines.every((split) => split.isFinal) : false;
+
+    return {
+      ...row,
+      split_lines: splitLines,
+      has_split_lines: splitLines.length > 0,
+      split_is_final: splitIsFinal,
+      split_total: normalizeMoney(splitTotal),
+      split_target_total: targetTotal,
+      split_delta: splitDelta,
+    };
+  });
+}
+
+function normalizeSplitPayload(split, index) {
+  const category = String(split?.category || '').trim();
+  const subcategory = String(split?.subcategory || '').trim();
+  const note = String(split?.note || '').trim();
+  const amount = normalizeMoney(split?.amount);
+
+  if (!category) {
+    throw new Error('Split line ' + (index + 1) + ': category is required.');
+  }
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error('Split line ' + (index + 1) + ': amount must be greater than 0.');
+  }
+
+  return {
+    category,
+    subcategory,
+    note,
+    amount,
+    displayOrder: Number.isFinite(Number(split?.displayOrder)) ? Number(split.displayOrder) : index,
+  };
+}
+
 function parseBoolParam(value) {
   if (value === undefined || value === null || value === '') return null;
   const normalized = String(value).trim().toLowerCase();
@@ -47,14 +129,12 @@ router.get('/', (req, res) => {
     pending,
     search,
     sort = 'date_desc',
-    includeRawJson,
   } = req.query;
 
   const rawLimit = Number.parseInt(req.query.limit, 10);
   const rawOffset = Number.parseInt(req.query.offset, 10);
   const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, MAX_LIMIT) : DEFAULT_LIMIT;
   const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
-  const wantRawJson = includeRawJson === 'true' || includeRawJson === '1';
 
   const conditions = [];
   const params = [];
@@ -109,7 +189,7 @@ router.get('/', (req, res) => {
 
   const whereClause = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
   const orderByClause = 'ORDER BY ' + (SORT_MAP[sort] || SORT_MAP.date_desc);
-  const rawJsonSelect = wantRawJson ? ', t.raw_json' : '';
+  const rawJsonSelect = '';
   const selectClause =
     'SELECT ' +
     't.id, t.plaid_transaction_id, t.account_id, t.plaid_account_id, t.date, t.name, t.merchant_name, t.amount, t.pending, ' +
@@ -121,11 +201,6 @@ router.get('/', (req, res) => {
   const isLegacyArrayRequest = Object.keys(req.query || {}).length === 0;
 
   try {
-    if (isLegacyArrayRequest) {
-      const rows = db.prepare(selectClause + orderByClause).all();
-      return res.json(rows);
-    }
-
     const countRow = db.prepare(
       'SELECT COUNT(*) AS total FROM transactions t LEFT JOIN accounts a ON t.account_id = a.id ' + whereClause
     ).get(...params);
@@ -134,6 +209,7 @@ router.get('/', (req, res) => {
     const rows = db.prepare(
       selectClause + whereClause + ' ' + orderByClause + ' LIMIT ? OFFSET ?'
     ).all(...params, limit, offset);
+    const rowsWithSplits = attachSplitData(rows);
 
     const hasNext = offset + rows.length < total;
     const hasPrevious = offset > 0;
@@ -146,7 +222,7 @@ router.get('/', (req, res) => {
     }
 
     return res.json({
-      rows,
+      rows: rowsWithSplits,
       pagination: {
         limit,
         offset,
@@ -175,7 +251,111 @@ router.get('/', (req, res) => {
   }
 });
 
+// GET /api/transactions/:id/splits
+router.get('/:id/splits', (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const parent = db.prepare('SELECT id, amount FROM transactions WHERE id = ?').get(id);
+    if (!parent) {
+      return res.status(404).json({ error: 'Transaction not found.' });
+    }
+
+    const parentWithSplits = attachSplitData([{ ...parent }])[0] || parent;
+    return res.json({
+      parentTransactionId: parentWithSplits.id,
+      parentAmount: normalizeMoney(parentWithSplits.amount),
+      splitTargetTotal: Math.abs(normalizeMoney(parentWithSplits.amount)),
+      splitTotal: normalizeMoney(parentWithSplits.split_total || 0),
+      splitDelta: normalizeMoney(parentWithSplits.split_delta || 0),
+      splitIsFinal: !!parentWithSplits.split_is_final,
+      splits: Array.isArray(parentWithSplits.split_lines) ? parentWithSplits.split_lines : [],
+    });
+  } catch (err) {
+    console.error('Error fetching transaction splits:', err.message);
+    return res.status(500).json({ error: 'Failed to fetch transaction splits.' });
+  }
+});
+
+// POST /api/transactions/:id/splits
+router.post('/:id/splits', (req, res) => {
+  const { id } = req.params;
+  const splits = Array.isArray(req.body?.splits) ? req.body.splits : [];
+  const isFinal = req.body?.isFinal === true;
+
+  try {
+    const parent = db.prepare('SELECT id, amount FROM transactions WHERE id = ?').get(id);
+    if (!parent) {
+      return res.status(404).json({ error: 'Transaction not found.' });
+    }
+
+    const normalizedSplits = splits.map((split, index) => normalizeSplitPayload(split, index));
+    const splitTotal = normalizedSplits.reduce((sum, split) => sum + normalizeMoney(split.amount), 0);
+    const parentAbsAmount = Math.abs(normalizeMoney(parent.amount));
+    const splitDelta = normalizeMoney(splitTotal - parentAbsAmount);
+
+    if (isFinal && normalizedSplits.length > 0 && toCents(splitDelta) !== 0) {
+      return res.status(400).json({
+        error: 'Split total must match the parent transaction amount before final save.',
+        splitTotal,
+        splitTargetTotal: parentAbsAmount,
+        splitDelta,
+      });
+    }
+
+    const now = new Date().toISOString();
+    const persist = db.transaction(() => {
+      db.prepare('DELETE FROM transaction_splits WHERE parent_transaction_id = ?').run(id);
+
+      if (!normalizedSplits.length) return;
+
+      const insert = db.prepare(
+        'INSERT INTO transaction_splits (id, parent_transaction_id, category, subcategory, amount, note, display_order, is_final, created_at, updated_at) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      );
+
+      normalizedSplits.forEach((split, index) => {
+        insert.run(
+          randomUUID(),
+          id,
+          safeSqlValue(split.category),
+          safeSqlValue(split.subcategory || null),
+          split.amount,
+          safeSqlValue(split.note || null),
+          split.displayOrder ?? index,
+          isFinal ? 1 : 0,
+          now,
+          now
+        );
+      });
+    });
+
+    persist();
+
+    const refreshed = attachSplitData([
+      db.prepare('SELECT id, amount FROM transactions WHERE id = ?').get(id),
+    ])[0];
+
+    return res.json({
+      ok: true,
+      parentTransactionId: id,
+      splitIsFinal: !!refreshed.split_is_final,
+      splitTotal: normalizeMoney(refreshed.split_total || 0),
+      splitTargetTotal: Math.abs(normalizeMoney(refreshed.amount || 0)),
+      splitDelta: normalizeMoney(refreshed.split_delta || 0),
+      splits: refreshed.split_lines || [],
+    });
+  } catch (err) {
+    console.error('Error saving transaction splits:', err.message);
+    return res.status(400).json({ error: 'Failed to save transaction splits.' });
+  }
+});
+
 router.get('/:id/debug', (req, res) => {
+  if (process.env.ENABLE_TRANSACTION_DEBUG !== 'true') {
+    return res.status(404).json({ error: 'Not found.' });
+  }
+
   const { id } = req.params;
 
   try {
@@ -217,10 +397,7 @@ router.get('/:id/debug', (req, res) => {
     if (row.raw_json) {
       try {
         debugRawJson = JSON.parse(row.raw_json);
-        delete debugRawJson.access_token;
-        delete debugRawJson.public_token;
-        delete debugRawJson.secret;
-        delete debugRawJson.link_token;
+        debugRawJson = null;
       } catch {
         debugRawJson = null;
       }
@@ -343,7 +520,7 @@ router.patch('/:id', (req, res) => {
       )
       .get(id);
 
-    res.json(updated);
+    res.json(attachSplitData([updated])[0] || updated);
   } catch (err) {
     console.error('Error updating transaction:', err.message);
     res.status(500).json({ error: 'Failed to update transaction.' });

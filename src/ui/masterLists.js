@@ -33,7 +33,7 @@ export async function renderMasterLists(container) {
   const data = await getMasterLists(false);
 
   if (!data.loaded) {
-    body.innerHTML = '<section class="card"><div class="error-card">' + escapeHtml(data.error || 'Backend not running on http://localhost:8787.') + '</div></section>';
+    body.innerHTML = '<section class="card"><div class="error-card">' + escapeHtml(data.error || 'Backend not reachable through the local API proxy.') + '</div></section>';
     return;
   }
 
@@ -228,7 +228,7 @@ function _attachDelegation(body, container, initialData) {
         _uiState.message = 'Expense added.';
         await _repaint(container);
       } catch (err) {
-        _uiState.error = err.offline ? 'Backend not running on http://localhost:8787.' : err.message;
+        _uiState.error = err.offline ? 'Backend not reachable through the local API proxy.' : err.message;
         await _repaint(container);
       } finally { btn.disabled = false; }
       return;
@@ -257,7 +257,7 @@ function _attachDelegation(body, container, initialData) {
         _uiState.message = 'Expense updated.';
         await _repaint(container);
       } catch (err) {
-        _uiState.error = err.offline ? 'Backend not running on http://localhost:8787.' : err.message;
+        _uiState.error = err.offline ? 'Backend not reachable through the local API proxy.' : err.message;
         await _repaint(container);
       } finally { btn.disabled = false; }
       return;
@@ -270,7 +270,7 @@ function _attachDelegation(body, container, initialData) {
         _uiState.message = btn.dataset.active === '1' ? 'Expense deactivated.' : 'Expense reactivated.';
         await _repaint(container);
       } catch (err) {
-        _uiState.error = err.offline ? 'Backend not running on http://localhost:8787.' : err.message;
+        _uiState.error = err.offline ? 'Backend not reachable through the local API proxy.' : err.message;
         await _repaint(container);
       } finally { btn.disabled = false; }
       return;
@@ -285,7 +285,7 @@ function _attachDelegation(body, container, initialData) {
         _uiState.message = 'Recurring bill added.';
         await _repaint(container);
       } catch (err) {
-        _uiState.error = err.offline ? 'Backend not running on http://localhost:8787.' : err.message;
+        _uiState.error = err.offline ? 'Backend not reachable through the local API proxy.' : err.message;
         await _repaint(container);
       } finally { btn.disabled = false; }
       return;
@@ -314,7 +314,7 @@ function _attachDelegation(body, container, initialData) {
         _uiState.message = 'Recurring bill updated.';
         await _repaint(container);
       } catch (err) {
-        _uiState.error = err.offline ? 'Backend not running on http://localhost:8787.' : err.message;
+        _uiState.error = err.offline ? 'Backend not reachable through the local API proxy.' : err.message;
         await _repaint(container);
       } finally { btn.disabled = false; }
       return;
@@ -327,7 +327,7 @@ function _attachDelegation(body, container, initialData) {
         _uiState.message = btn.dataset.active === '1' ? 'Recurring bill deactivated.' : 'Recurring bill reactivated.';
         await _repaint(container);
       } catch (err) {
-        _uiState.error = err.offline ? 'Backend not running on http://localhost:8787.' : err.message;
+        _uiState.error = err.offline ? 'Backend not reachable through the local API proxy.' : err.message;
         await _repaint(container);
       } finally { btn.disabled = false; }
       return;

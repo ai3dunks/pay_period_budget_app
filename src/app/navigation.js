@@ -66,16 +66,19 @@ export function renderShell(app) {
  * renderNav — populates #main-nav with tab buttons.
  * @param {string} activeTab
  * @param {function} onTabClick  (tabId) => void
+ * @param {Set<string>} disabledTabs  optional set of disabled tab IDs
  */
-export function renderNav(activeTab, onTabClick) {
+export function renderNav(activeTab, onTabClick, disabledTabs = new Set()) {
   const nav = document.getElementById('main-nav');
   if (!nav) return;
   nav.innerHTML = '';
   for (const tab of tabs) {
+    if (disabledTabs.has(tab.id)) continue;
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'nav-btn' + (tab.id === activeTab ? ' active' : '');
     button.textContent = tab.label;
+    button.title = tab.label;
     button.addEventListener('click', () => onTabClick(tab.id));
     nav.appendChild(button);
   }

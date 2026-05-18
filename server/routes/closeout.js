@@ -119,9 +119,6 @@ function sanitizeCloseoutPayload(payload = {}) {
   const safeToTransfer = totalsSource.safeToTransfer === null || totalsSource.safeToTransfer === undefined
     ? null
     : toNullableNumber(totalsSource.safeToTransfer);
-  const boaRollover = totalsSource.boaRollover === null || totalsSource.boaRollover === undefined
-    ? null
-    : toNullableNumber(totalsSource.boaRollover);
 
   return {
     periodId: String(payload.periodId || '').trim(),
@@ -134,7 +131,6 @@ function sanitizeCloseoutPayload(payload = {}) {
       billsConfirmed: !!confirmationsSource.billsConfirmed,
       transfersConfirmed: !!confirmationsSource.transfersConfirmed,
       expensesConfirmed: !!confirmationsSource.expensesConfirmed,
-      rolloverConfirmed: !!confirmationsSource.rolloverConfirmed,
     },
     notes: String(payload.notes || ''),
     carryForwardNotes: String(payload.carryForwardNotes || ''),
@@ -143,7 +139,6 @@ function sanitizeCloseoutPayload(payload = {}) {
       regularPaycheck: toNumber(totalsSource.regularPaycheck, 0),
       bonusIncome: toNumber(totalsSource.bonusIncome, 0),
       otherIncome: toNumber(totalsSource.otherIncome, 0),
-      boaRollover,
       recurringBillsDue: toNumber(totalsSource.recurringBillsDue, 0),
       recurringBillsPaid: toNumber(totalsSource.recurringBillsPaid, 0),
       recurringBillsLeftToPay: toNumber(totalsSource.recurringBillsLeftToPay, 0),
@@ -193,7 +188,6 @@ function normalizeCloseoutRow(row, fallback = {}) {
       recurringBills: { confirmed: !!closeoutJson.confirmations.billsConfirmed },
       transfers: { confirmed: !!closeoutJson.confirmations.transfersConfirmed },
       expenses: { confirmed: !!closeoutJson.confirmations.expensesConfirmed },
-      rollover: { confirmed: !!closeoutJson.confirmations.rolloverConfirmed },
     },
     analysis,
     readyToClose: !!analysis.readyToClose,
@@ -214,14 +208,13 @@ function getCompactCloseoutAnalysis(payload) {
   if (toNumber(counts.unreviewedTransactions, 0) > 0 && !confirmations.expensesConfirmed) blockers.push('Unreviewed transactions remain and Expenses are not confirmed.');
   if (toNumber(counts.unpaidBillsCount, 0) > 0 && !confirmations.billsConfirmed) blockers.push('Unpaid recurring bills remain and Bills are not confirmed.');
   if (toNumber(counts.transferPendingCount, 0) > 0 && !confirmations.transfersConfirmed) blockers.push('Transfer checklist still has pending items.');
-  if (totals.boaRollover === null && !confirmations.rolloverConfirmed) blockers.push('BOA rollover is unavailable.');
 
   if (toNumber(counts.overBudgetCategoryCount, 0) > 0) warnings.push('Expense categories are over budget.');
   if (Number.isFinite(Number(totals.safeToSpend)) && Number(totals.safeToSpend) < 0) warnings.push('Safe to Spend is negative.');
   if (Number.isFinite(Number(totals.safeToTransfer)) && Number(totals.safeToTransfer) < 0) warnings.push('Safe to Transfer is negative.');
   if (rows.alerts.some((row) => String(row.severity || '').toLowerCase() === 'danger')) warnings.push('One or more closeout alerts are marked danger.');
 
-  const readyToClose = !!confirmations.incomeConfirmed && !!confirmations.billsConfirmed && !!confirmations.transfersConfirmed && !!confirmations.expensesConfirmed && !!confirmations.rolloverConfirmed && blockers.length === 0;
+  const readyToClose = !!confirmations.incomeConfirmed && !!confirmations.billsConfirmed && !!confirmations.transfersConfirmed && !!confirmations.expensesConfirmed && blockers.length === 0;
   return {
     readyToClose,
     blockers,
@@ -247,7 +240,7 @@ function buildSnapshotTotals(payload) {
     regular_paycheck: Number(totals.regularPaycheck || 0),
     bonus_income: Number(totals.bonusIncome || 0),
     other_income: Number(totals.otherIncome || 0),
-    boa_rollover: Number(totals.boaRollover || 0),
+    boa_rollover: 0,
     recurring_bills_due: Number(totals.recurringBillsDue || 0),
     recurring_bills_paid: Number(totals.recurringBillsPaid || 0),
     recurring_bills_left_to_pay: Number(totals.recurringBillsLeftToPay || 0),
@@ -390,7 +383,7 @@ function upsertCloseout({ payload, statusOverrides = {} }) {
     bills_confirmed: compact.confirmations.billsConfirmed ? 1 : 0,
     transfers_confirmed: compact.confirmations.transfersConfirmed ? 1 : 0,
     expenses_confirmed: compact.confirmations.expensesConfirmed ? 1 : 0,
-    rollover_confirmed: compact.confirmations.rolloverConfirmed ? 1 : 0,
+    rollover_confirmed: 0,
     notes: compact.notes || '',
     carry_forward_notes: compact.carryForwardNotes || '',
     closeout_json: buildCloseoutJson(compact),
@@ -427,7 +420,7 @@ router.get('/', (req, res) => {
     res.json(getCloseoutResponse(row));
   } catch (err) {
     console.error('GET /api/closeout error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to fetch closeout.' });
   }
 });
 
@@ -450,7 +443,7 @@ router.post('/prepare', (req, res) => {
     res.json(getCloseoutResponse(record));
   } catch (err) {
     console.error('POST /api/closeout/prepare error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to prepare closeout.' });
   }
 });
 
@@ -471,7 +464,6 @@ router.patch('/:id', (req, res) => {
         billsConfirmed: payload.billsConfirmed !== undefined ? !!payload.billsConfirmed : existingCompact.confirmations.billsConfirmed,
         transfersConfirmed: payload.transfersConfirmed !== undefined ? !!payload.transfersConfirmed : existingCompact.confirmations.transfersConfirmed,
         expensesConfirmed: payload.expensesConfirmed !== undefined ? !!payload.expensesConfirmed : existingCompact.confirmations.expensesConfirmed,
-        rolloverConfirmed: payload.rolloverConfirmed !== undefined ? !!payload.rolloverConfirmed : existingCompact.confirmations.rolloverConfirmed,
       },
       notes: payload.notes !== undefined ? String(payload.notes || '') : existingCompact.notes,
       carryForwardNotes: payload.carryForwardNotes !== undefined ? String(payload.carryForwardNotes || '') : existingCompact.carryForwardNotes,
@@ -490,7 +482,7 @@ router.patch('/:id', (req, res) => {
       compact.confirmations.billsConfirmed ? 1 : 0,
       compact.confirmations.transfersConfirmed ? 1 : 0,
       compact.confirmations.expensesConfirmed ? 1 : 0,
-      compact.confirmations.rolloverConfirmed ? 1 : 0,
+      0,
       payload.snapshotId !== undefined ? (payload.snapshotId || null) : existing.snapshot_id,
       compact.notes,
       compact.carryForwardNotes,
@@ -504,7 +496,7 @@ router.patch('/:id', (req, res) => {
     res.json(getCloseoutResponse(row));
   } catch (err) {
     console.error('PATCH /api/closeout/:id error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to update closeout.' });
   }
 });
 
@@ -544,7 +536,7 @@ router.post('/:id/close', (req, res) => {
     });
   } catch (err) {
     console.error('POST /api/closeout/:id/close error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to close period.' });
   }
 });
 
@@ -567,7 +559,7 @@ router.post('/:id/reopen', (req, res) => {
     res.json(getCloseoutResponse(row));
   } catch (err) {
     console.error('POST /api/closeout/:id/reopen error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to reopen period.' });
   }
 });
 

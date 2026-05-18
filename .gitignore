@@ -35,4 +35,6 @@ data/
 *.db
 *.sqlite
 *.sqlite3
-budget-dashboard*.zip
+*.zip
+.npm-global/
+.tools/

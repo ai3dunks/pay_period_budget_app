@@ -45,7 +45,7 @@ export async function getMasterLists(forceReload = false) {
   } catch (err) {
     _cache = {
       loaded: false,
-      error: err.offline ? 'Backend not running on http://localhost:8787.' : err.message,
+      error: err.offline ? 'Backend not reachable through the local API proxy.' : err.message,
       expenseList: _cache?.expenseList || [],
       recurringBillsList: _cache?.recurringBillsList || [],
     };

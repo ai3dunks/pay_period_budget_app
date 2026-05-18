@@ -119,9 +119,8 @@ export function calculateWantsActuals({ transactions = [], period }) {
  * Rules:
  * - Josh + Taylor each get half of wants-remaining after their actual spending
  * - Discover gets Needs remaining (up to expense budget), Debt/Savings fills shortfall
- * - BOA Reserve is protected money already deducted from the safe-to-transfer calc
  */
-export function calculateTransferPlan({ splitSummary, expenseBudget, wantsActuals, boaReserve = 0 }) {
+export function calculateTransferPlan({ splitSummary, expenseBudget, wantsActuals }) {
   const splitRowByCategory = {};
   for (const row of splitSummary?.rows || []) {
     splitRowByCategory[row.category] = row;
@@ -150,9 +149,8 @@ export function calculateTransferPlan({ splitSummary, expenseBudget, wantsActual
   const discoverTransfer = needsToDiscover + debtSavingsRedirect;
   const discoverShortfall = Math.max(0, discoverTarget - discoverTransfer);
   const debtSavingsTransfer = Math.max(0, Math.max(0, debtSavingsRemaining) - debtSavingsRedirect);
-  const normalizedBoaReserve = toNumber(boaReserve, 0);
   const totalPlannedTransfers =
-    joshTransfer + taylorTransfer + discoverTransfer + debtSavingsTransfer + normalizedBoaReserve;
+    joshTransfer + taylorTransfer + discoverTransfer + debtSavingsTransfer;
 
   return {
     wantsRemaining,
@@ -170,7 +168,6 @@ export function calculateTransferPlan({ splitSummary, expenseBudget, wantsActual
     discoverTransfer,
     discoverShortfall,
     debtSavingsTransfer,
-    boaReserve: normalizedBoaReserve,
     totalPlannedTransfers,
   };
 }

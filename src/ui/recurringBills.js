@@ -5,8 +5,9 @@
 
 import { buildPayPeriodSummary } from '../utils/payPeriodSummary.js';
 import { fetchCloseoutRecord } from '../utils/closeoutClient.js';
+import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
 
-const BACKEND = 'http://localhost:8787';
+const BACKEND = '';
 
 /**
  * Fetch recurring bills from master lists API
@@ -230,6 +231,9 @@ export async function renderRecurringBills(container, period, periodLabel) {
       statusMap[status.recurringBillId] = status;
     });
 
+    const ccSettings = await loadCommandCenterSettings().catch(() => null);
+    const rbFeat = (key) => isFeatureEnabled(ccSettings, 'recurringBills', key);
+
     const page = document.createElement('div');
     page.className = 'recurring-bills-page';
 
@@ -273,7 +277,7 @@ export async function renderRecurringBills(container, period, periodLabel) {
       '<div id="auto-detect-note" class="info-message"></div>' +
       '<div id="auto-detect-error" class="error-message"></div>' +
       '</div>';
-    page.appendChild(tools);
+    if (rbFeat('showAutoPaidDetection') || rbFeat('showAdvancedBillRules')) page.appendChild(tools);
 
     const billsSection = document.createElement('div');
     billsSection.className = 'bills-section';
@@ -312,7 +316,7 @@ export async function renderRecurringBills(container, period, periodLabel) {
         let dueBadge = '';
         let autoPaidBadge = '';
 
-        if (status && status.autoPaid) {
+        if (status && status.autoPaid && rbFeat('showAutoPaidDetection')) {
           autoPaidBadge = ' <span class="badge-auto-paid" title="Auto-detected and paid">Auto-paid</span>';
         }
 
@@ -325,20 +329,22 @@ export async function renderRecurringBills(container, period, periodLabel) {
         }
 
         let matchStatusHtml = '<span class="badge-unpaid">Unpaid</span>';
-        if (statusLabel === 'Auto-paid') {
-          matchStatusHtml =
-            '<button type="button" class="status-pill-button transaction-popup-trigger" data-bill-id="' + escapeHtml(bill.id) + '"><span class="badge-auto-paid">Auto-paid</span></button>' +
-            renderBillMatchDetails(status);
-        } else if (statusLabel === 'Manual' || isManual) {
-          matchStatusHtml =
-            '<button type="button" class="status-pill-button transaction-popup-trigger" data-bill-id="' + escapeHtml(bill.id) + '"><span class="badge-manual">Manual</span></button>' +
-            '<button class="button button-secondary button-sm clear-override-btn" data-bill-id="' + escapeHtml(bill.id) + '">Clear manual override</button>';
-        } else if (statusLabel === 'Possible match') {
-          matchStatusHtml =
-            '<span class="badge-possible">Possible match</span>' +
-            renderBillMatchDetails(status);
-        } else if (statusLabel === 'Autopay not found') {
-          matchStatusHtml = '<span class="badge-autopay-missing">Autopay not found yet</span>';
+        if (rbFeat('showBillMatchingTools')) {
+          if (statusLabel === 'Auto-paid') {
+            matchStatusHtml =
+              '<button type="button" class="status-pill-button transaction-popup-trigger" data-bill-id="' + escapeHtml(bill.id) + '"><span class="badge-auto-paid">Auto-paid</span></button>' +
+              renderBillMatchDetails(status);
+          } else if (statusLabel === 'Manual' || isManual) {
+            matchStatusHtml =
+              '<button type="button" class="status-pill-button transaction-popup-trigger" data-bill-id="' + escapeHtml(bill.id) + '"><span class="badge-manual">Manual</span></button>' +
+              '<button class="button button-secondary button-sm clear-override-btn" data-bill-id="' + escapeHtml(bill.id) + '">Clear manual override</button>';
+          } else if (statusLabel === 'Possible match') {
+            matchStatusHtml =
+              '<span class="badge-possible">Possible match</span>' +
+              renderBillMatchDetails(status);
+          } else if (statusLabel === 'Autopay not found') {
+            matchStatusHtml = '<span class="badge-autopay-missing">Autopay not found yet</span>';
+          }
         }
 
         const row = document.createElement('tr');

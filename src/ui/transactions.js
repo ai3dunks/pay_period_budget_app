@@ -3,9 +3,10 @@
  */
 
 import { escapeHtml } from '../utils/dom.js';
-import { getTransactions, patchTransaction } from '../api/transactionsApi.js';
+import { getTransactions, patchTransaction, getTransactionSplits, saveTransactionSplits } from '../api/transactionsApi.js';
 import { getMasterLists } from '../api/masterListsApi.js';
 import { applyRules } from '../api/rulesApi.js';
+import { getSetting } from '../api/settingsApi.js';
 import { getActivePeriod } from '../app/appState.js';
 import { getPeriodLabel } from '../utils/formatters.js';
 import {
@@ -18,8 +19,9 @@ import {
 } from './rulesManager.js';
 import { normalizeReviewDraft, renderReviewModalHtml } from './transactionReviewModal.js';
 import { emitAppEvent } from '../app/events.js';
-import { API_BASE } from '../api/client.js';
 import { timeAsync, logRenderTime } from '../utils/performance.js';
+import { getAccounts } from '../api/plaidApi.js';
+import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
 
 const TRANSACTION_TYPES_FOR_FILTER = ['Income', 'Expense', 'Bills', 'Wants', 'Transfer', 'Debt Payment', 'Ignore'];
 const PAGE_SIZE_OPTIONS = [50, 100, 250, 500];
@@ -37,6 +39,7 @@ let _pagination = {
 };
 let _filters = {
   search: '',
+  accountId: '',
   type: '',
   reviewed: '',
   showIgnored: false,
@@ -53,6 +56,15 @@ let _loadError = null;
 let _searchDebounceTimer = null;
 let _legacyCompatibilityMode = false;
 let _legacyWarningLogged = false;
+let _accountTabs = [{ id: '', label: 'All accounts' }];
+let _splitModalTxId = null;
+let _splitDraftLines = [];
+let _splitDraftIsFinal = false;
+let _expandedSplitParentIds = new Set();
+let _splitValidationMessage = '';
+let _expenseCategoryOptions = [];
+let _txCcSettings = null;
+const ACCOUNT_TAB_LABELS_SETTING_KEY = 'account_tab_labels';
 
 export function setPendingReviewTransactionId(id) {
   _pendingReviewTxId = id;
@@ -66,7 +78,12 @@ export async function renderTransactions(container) {
   body.innerHTML = '<section class="card"><p class="empty-state">Loading transactions...</p></section>';
   _attachDelegation(body);
 
-  await getMasterLists(false);
+  const masterLists = await getMasterLists(false);
+  _expenseCategoryOptions = Array.isArray(masterLists?.expenseList)
+    ? masterLists.expenseList.map((row) => String(row?.name || '').trim()).filter(Boolean)
+    : [];
+  _txCcSettings = await loadCommandCenterSettings().catch(() => null);
+  await _loadAccountTabs();
   const period = getActivePeriod();
 
   try {
@@ -116,6 +133,7 @@ function _buildQueryParams(period, offset) {
     params.exclusiveEndDate = period.exclusiveEndDate;
   }
   if (_filters.search) params.search = _filters.search;
+  if (_filters.accountId) params.accountId = _filters.accountId;
   if (_filters.type) params.type = _filters.type;
   if (_filters.reviewed !== '') params.reviewed = _filters.reviewed;
   if (!_filters.showIgnored) params.ignored = 'false';
@@ -162,6 +180,7 @@ function _filterLegacyRows(rows, period) {
   const searchNeedle = String(_filters.search || '').trim().toLowerCase();
   const next = rows
     .filter((row) => _viewMode !== 'period' || _isRowInPeriod(row, period))
+    .filter((row) => !_filters.accountId || String(row.account_id || '') === _filters.accountId)
     .filter((row) => _filters.showIgnored || !row.ignored)
     .filter((row) => !_filters.type || String(row.type || '') === _filters.type)
     .filter((row) => {
@@ -223,7 +242,7 @@ function _paint(body, period) {
   if (_loadError) {
     body.innerHTML =
       '<section class="card"><div class="error-card">' +
-      (_loadError.offline ? 'Backend not running on ' + API_BASE + '.' : 'Transactions could not be loaded.') +
+      (_loadError.offline ? 'Backend not reachable through the local API proxy.' : 'Transactions could not be loaded.') +
       '<br><small>' + escapeHtml(_loadError.message) + '</small></div></section>';
     logRenderTime('transactions.paint.error', renderStartedAt);
     return;
@@ -232,8 +251,13 @@ function _paint(body, period) {
   const modeLabel = _viewMode === 'period'
     ? 'Showing transactions for: ' + getPeriodLabel(period)
     : 'Showing all synced transactions.';
+  const selectedAccountTab = _accountTabs.find((tab) => tab.id === _filters.accountId) || _accountTabs[0];
+  const accountScopeLabel = selectedAccountTab && selectedAccountTab.id
+    ? 'Account: ' + selectedAccountTab.label + '.'
+    : 'Account: all accounts.';
   const reviewedCount = _rows.filter((row) => !!row.reviewed).length;
   const needsReviewCount = _rows.filter((row) => !row.reviewed).length;
+  const txFeat = (key) => isFeatureEnabled(_txCcSettings, 'transactions', key);
 
   const headerHtml =
     '<section class="card">' +
@@ -243,26 +267,30 @@ function _paint(body, period) {
     (_txMessage ? '<p class="settings-message ' + (_txMessageType === 'error' ? 'error' : 'success') + '">' + escapeHtml(_txMessage) + '</p>' : '') +
     '<div class="card-header"><h3 class="card-title">Synced Transactions</h3><p class="card-description transaction-count">' +
     _pagination.total + ' total transaction' + (_pagination.total !== 1 ? 's' : '') + '</p></div>' +
-    '<div class="dashboard-grid transaction-stats">' +
-    '<article class="card stat-card"><p class="card-description">Total</p><h3 class="card-title">' + _pagination.total + '</h3></article>' +
-    '<article class="card stat-card"><p class="card-description">This Page</p><h3 class="card-title">' + _rows.length + '</h3></article>' +
-    '<article class="card stat-card"><p class="card-description">Needs Review</p><h3 class="card-title">' + needsReviewCount + '</h3></article>' +
-    '<article class="card stat-card"><p class="card-description">Reviewed</p><h3 class="card-title">' + reviewedCount + '</h3></article>' +
-    '</div>' +
+    (txFeat('showReviewQueue') ?
+      '<div class="dashboard-grid transaction-stats">' +
+      '<article class="card stat-card"><p class="card-description">Total</p><h3 class="card-title">' + _pagination.total + '</h3></article>' +
+      '<article class="card stat-card"><p class="card-description">This Page</p><h3 class="card-title">' + _rows.length + '</h3></article>' +
+      '<article class="card stat-card"><p class="card-description">Needs Review</p><h3 class="card-title">' + needsReviewCount + '</h3></article>' +
+      '<article class="card stat-card"><p class="card-description">Reviewed</p><h3 class="card-title">' + reviewedCount + '</h3></article>' +
+      '</div>' : '') +
+    (txFeat('showBankTabs') ? _renderAccountTabs() : '') +
     '<div class="form-grid">' +
     '<label class="form-field"><span>Search</span><input type="text" id="tx-search" value="' + escapeHtml(_filters.search) + '" placeholder="Description, merchant, category..."></label>' +
-    '<label class="form-field"><span>Type</span><select id="tx-type-filter"><option value="">All</option>' +
-    TRANSACTION_TYPES_FOR_FILTER.map((type) => '<option value="' + escapeHtml(type) + '"' + (_filters.type === type ? ' selected' : '') + '>' + type + '</option>').join('') +
-    '</select></label>' +
-    '<label class="form-field"><span>Reviewed</span><select id="tx-reviewed-filter">' +
-    '<option value="">All</option>' +
-    '<option value="true"' + (_filters.reviewed === 'true' ? ' selected' : '') + '>Reviewed</option>' +
-    '<option value="false"' + (_filters.reviewed === 'false' ? ' selected' : '') + '>Needs Review</option>' +
-    '</select></label>' +
-    '<label class="form-field field-checkbox"><input type="checkbox" id="tx-show-ignored"' + (_filters.showIgnored ? ' checked' : '') + '> <span>Show ignored</span></label>' +
+    (txFeat('showAdvancedFilters') ?
+      '<label class="form-field"><span>Type</span><select id="tx-type-filter"><option value="">All</option>' +
+      TRANSACTION_TYPES_FOR_FILTER.map((type) => '<option value="' + escapeHtml(type) + '"' + (_filters.type === type ? ' selected' : '') + '>' + type + '</option>').join('') +
+      '</select></label>' +
+      '<label class="form-field"><span>Reviewed</span><select id="tx-reviewed-filter">' +
+      '<option value="">All</option>' +
+      '<option value="true"' + (_filters.reviewed === 'true' ? ' selected' : '') + '>Reviewed</option>' +
+      '<option value="false"' + (_filters.reviewed === 'false' ? ' selected' : '') + '>Needs Review</option>' +
+      '</select></label>' +
+      '<label class="form-field field-checkbox"><input type="checkbox" id="tx-show-ignored"' + (_filters.showIgnored ? ' checked' : '') + '> <span>Show ignored</span></label>'
+      : '') +
     '</div>' +
     '<div class="filter-actions">' +
-    '<span class="muted-note">' + escapeHtml(modeLabel) + '</span>' +
+    '<span class="muted-note">' + escapeHtml(modeLabel + ' ' + accountScopeLabel) + '</span>' +
     '<button class="button button-secondary" data-action="preview-rules">Preview Rules</button>' +
     '<button class="button button-secondary" data-action="apply-rules">Apply Rules</button>' +
     '<button class="button button-secondary" data-action="show-all-synced">Show all synced</button>' +
@@ -274,8 +302,10 @@ function _paint(body, period) {
   const modalTx = _reviewModalTxId ? _rows.find((row) => row.id === _reviewModalTxId) : null;
   const modalDraft = modalTx ? normalizeReviewDraft(modalTx, _reviewDraft || {}) : null;
   const modalHtml = modalTx && modalDraft ? renderReviewModalHtml(modalTx, modalDraft) : '';
+  const splitModalTx = (txFeat('showSplitTransactionTools') && _splitModalTxId) ? _rows.find((row) => row.id === _splitModalTxId) : null;
+  const splitModalHtml = splitModalTx ? _renderSplitModalHtml(splitModalTx) : '';
 
-  body.innerHTML = headerHtml + tableHtml + _renderPaginationControls('pagination-bottom') + '</section>' + modalHtml + renderRuleEditorModalHtml(_rows);
+  body.innerHTML = headerHtml + tableHtml + _renderPaginationControls('pagination-bottom') + '</section>' + modalHtml + splitModalHtml + renderRuleEditorModalHtml(_rows);
   logRenderTime('transactions.paint', renderStartedAt);
 }
 
@@ -301,31 +331,133 @@ function _renderPaginationControls(extraClass = '') {
   );
 }
 
+function _renderAccountTabs() {
+  const tabs = (_accountTabs.length ? _accountTabs : [{ id: '', label: 'All accounts' }]).map((tab) => {
+    const isActive = String(tab.id || '') === String(_filters.accountId || '');
+    return (
+      '<button class="button button-secondary account-tab-button' + (isActive ? ' active' : '') + '" data-action="select-account-tab" data-account-id="' + escapeHtml(tab.id || '') + '">' +
+      escapeHtml(tab.label) +
+      '</button>'
+    );
+  }).join('');
+
+  return '<div class="account-tabs" role="tablist" aria-label="Filter transactions by account">' + tabs + '</div>';
+}
+
 function _renderTable() {
   const formatAmount = (amount) => {
     const absolute = Math.abs(Number(amount || 0)).toFixed(2);
     return Number(amount || 0) < 0 ? '-$' + absolute : '+$' + absolute;
   };
 
-  const rowsHtml = _rows.map((row) => (
-    '<tr>' +
-    '<td>' + escapeHtml(row.date || '') + '</td>' +
-    '<td>' + escapeHtml(row.account_name || '') + (row.mask ? ' (\u2022' + escapeHtml(row.mask) + ')' : '') + '<br><small>' + escapeHtml(row.institution_name || '') + '</small></td>' +
-    '<td>' + escapeHtml(row.name || '') + '</td>' +
-    '<td>' + escapeHtml(row.merchant_name || '') + '</td>' +
-    '<td class="' + (Number(row.amount || 0) < 0 ? 'amount-negative' : 'amount-positive') + '">' + escapeHtml(formatAmount(row.amount)) + '</td>' +
-    '<td>' + (row.pending ? 'Pending' : '') + '</td>' +
-    '<td>' + (row.type ? '<span class="type-badge">' + escapeHtml(row.type) + '</span>' : '<span class="muted-note">-</span>') + '</td>' +
-    '<td>' + (row.category ? '<span class="category-badge">' + escapeHtml(row.category) + '</span>' : '<span class="muted-note">-</span>') + '</td>' +
-    '<td>' + (row.reviewed ? '<span class="status-reviewed">Reviewed</span>' : '<span class="status-needs-review">Needs Review</span>') + '</td>' +
-    '<td class="transaction-actions">' +
-    '<button class="button button-secondary button-sm" data-action="review-transaction" data-id="' + escapeHtml(row.id) + '">Review</button>' +
-    '<button class="button button-secondary button-sm" data-action="toggle-ignore-transaction" data-id="' + escapeHtml(row.id) + '">' + (row.ignored ? 'Restore' : 'Ignore') + '</button>' +
-    '</td>' +
-    '</tr>'
-  )).join('');
+  const rowsHtml = _rows.map((row) => {
+    const hasSplits = Array.isArray(row.split_lines) && row.split_lines.length > 0;
+    const hasFinalSplits = hasSplits && !!row.split_is_final;
+    const isExpanded = hasSplits && _expandedSplitParentIds.has(String(row.id || ''));
+    const splitBadge = hasSplits
+      ? '<span class="split-badge">Split' + (row.split_is_final ? '' : ' (Draft)') + '</span>'
+      : '';
+    const splitToggle = hasSplits
+      ? '<button class="button button-secondary button-sm" data-action="toggle-split-details" data-id="' + escapeHtml(row.id) + '">' + (isExpanded ? 'Hide Splits' : 'Show Splits') + '</button>'
+      : '';
+
+    const parentRow = (
+      '<tr>' +
+      '<td>' + escapeHtml(row.date || '') + '</td>' +
+      '<td>' + escapeHtml(row.account_name || '') + (row.mask ? ' (\u2022' + escapeHtml(row.mask) + ')' : '') + '<br><small>' + escapeHtml(row.institution_name || '') + '</small></td>' +
+      '<td>' + escapeHtml(row.name || '') + (splitBadge ? '<br>' + splitBadge : '') + '</td>' +
+      '<td>' + escapeHtml(row.merchant_name || '') + '</td>' +
+      '<td class="' + (Number(row.amount || 0) < 0 ? 'amount-negative' : 'amount-positive') + '">' + escapeHtml(formatAmount(row.amount)) + '</td>' +
+      '<td>' + (row.pending ? 'Pending' : '') + '</td>' +
+      '<td>' + (hasFinalSplits ? '<span class="muted-note">-</span>' : (row.type ? '<span class="type-badge">' + escapeHtml(row.type) + '</span>' : '<span class="muted-note">-</span>')) + '</td>' +
+      '<td>' + (hasFinalSplits ? '<span class="muted-note">-</span>' : (row.category ? '<span class="category-badge">' + escapeHtml(row.category) + '</span>' : '<span class="muted-note">-</span>')) + '</td>' +
+      '<td>' + (row.reviewed ? '<span class="status-reviewed">Reviewed</span>' : '<span class="status-needs-review">Needs Review</span>') + '</td>' +
+      '<td class="transaction-actions">' +
+      (isFeatureEnabled(_txCcSettings, 'transactions', 'showSplitTransactionTools') ? '<button class="button button-secondary button-sm" data-action="open-split-editor" data-id="' + escapeHtml(row.id) + '">Split</button>' : '') +
+      splitToggle +
+      '<button class="button button-secondary button-sm" data-action="review-transaction" data-id="' + escapeHtml(row.id) + '">Review</button>' +
+      '<button class="button button-secondary button-sm" data-action="toggle-ignore-transaction" data-id="' + escapeHtml(row.id) + '">' + (row.ignored ? 'Restore' : 'Ignore') + '</button>' +
+      '</td>' +
+      '</tr>'
+    );
+
+    if (!hasSplits || !isExpanded) return parentRow;
+
+    const splitRowsHtml = row.split_lines.map((split) => (
+      '<tr>' +
+      '<td>' + escapeHtml(split.category || '') + '</td>' +
+      '<td>' + (split.subcategory ? escapeHtml(split.subcategory) : '<span class="muted-note">-</span>') + '</td>' +
+      '<td>' + (split.note ? escapeHtml(split.note) : '<span class="muted-note">-</span>') + '</td>' +
+      '<td class="amount-negative">-$' + escapeHtml(Math.abs(Number(split.amount || 0)).toFixed(2)) + '</td>' +
+      '</tr>'
+    )).join('');
+
+    return parentRow +
+      '<tr class="split-detail-row"><td colspan="10">' +
+      '<div class="split-detail-shell">' +
+      '<div class="split-detail-summary">Split total: $' + escapeHtml(Number(row.split_total || 0).toFixed(2)) + ' / Parent: $' + escapeHtml(Math.abs(Number(row.amount || 0)).toFixed(2)) + '</div>' +
+      '<div class="table-wrap"><table class="table table-compact"><thead><tr><th>Category</th><th>Subcategory</th><th>Note</th><th>Amount</th></tr></thead><tbody>' + splitRowsHtml + '</tbody></table></div>' +
+      '</div></td></tr>';
+  }).join('');
 
   return '<div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Account</th><th>Description</th><th>Merchant</th><th>Amount</th><th>Pending</th><th>Type</th><th>Category</th><th>Reviewed</th><th>Actions</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
+}
+
+function _calculateSplitTotals(parentAmount, splitLines) {
+  const target = Math.abs(Number(parentAmount || 0));
+  const total = (splitLines || []).reduce((sum, line) => sum + Math.abs(Number(line?.amount || 0)), 0);
+  const delta = Number((total - target).toFixed(2));
+  return {
+    target: Number(target.toFixed(2)),
+    total: Number(total.toFixed(2)),
+    delta,
+    balanced: Math.abs(delta) < 0.005,
+  };
+}
+
+function _renderSplitModalHtml(row) {
+  const lines = Array.isArray(_splitDraftLines) ? _splitDraftLines : [];
+  const totals = _calculateSplitTotals(row.amount, lines);
+  const categoryOptions = Array.from(new Set([
+    ..._expenseCategoryOptions,
+    ...lines.map((line) => String(line?.category || '').trim()).filter(Boolean),
+  ])).sort((a, b) => a.localeCompare(b));
+
+  const rowsHtml = lines.length
+    ? lines.map((line, index) => {
+      return (
+        '<tr>' +
+        '<td><input type="text" data-split-field="category" data-split-index="' + index + '" value="' + escapeHtml(line.category || '') + '" list="split-category-options" placeholder="Category"></td>' +
+        '<td><input type="text" data-split-field="subcategory" data-split-index="' + index + '" value="' + escapeHtml(line.subcategory || '') + '" placeholder="Optional"></td>' +
+        '<td><input type="number" step="0.01" min="0" data-split-field="amount" data-split-index="' + index + '" value="' + escapeHtml(String(Number(line.amount || 0).toFixed(2))) + '"></td>' +
+        '<td><input type="text" data-split-field="note" data-split-index="' + index + '" value="' + escapeHtml(line.note || '') + '" placeholder="Optional"></td>' +
+        '<td><button class="button button-secondary button-sm" data-action="remove-split-line" data-index="' + index + '">Remove</button></td>' +
+        '</tr>'
+      );
+    }).join('')
+    : '<tr><td colspan="5">No split lines yet.</td></tr>';
+
+  const deltaClass = totals.balanced ? 'success' : 'error';
+  const deltaLabel = totals.balanced
+    ? 'Balanced'
+    : (totals.delta > 0 ? 'Over by $' + totals.delta.toFixed(2) : 'Under by $' + Math.abs(totals.delta).toFixed(2));
+
+  return (
+    '<div class="modal-overlay" data-action="close-split-modal">' +
+    '<div class="modal-card split-modal" role="dialog" aria-modal="true" aria-label="Split transaction">' +
+    '<header class="modal-header"><h3 class="modal-title">Split Transaction</h3><button class="button button-secondary button-sm" data-action="close-split-modal">Close</button></header>' +
+    '<p class="card-description">' + escapeHtml(row.name || row.merchant_name || 'Transaction') + ' | Parent amount: $' + escapeHtml(Math.abs(Number(row.amount || 0)).toFixed(2)) + '</p>' +
+    '<datalist id="split-category-options">' + categoryOptions.map((name) => '<option value="' + escapeHtml(name) + '"></option>').join('') + '</datalist>' +
+    '<div class="table-wrap"><table class="table table-compact"><thead><tr><th>Category</th><th>Subcategory</th><th>Amount</th><th>Note</th><th></th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>' +
+    '<div class="settings-actions"><button class="button button-secondary" data-action="add-split-line">Add Line</button></div>' +
+    '<p class="settings-message ' + deltaClass + '">Split total: $' + totals.total.toFixed(2) + ' / Target: $' + totals.target.toFixed(2) + ' (' + deltaLabel + ')</p>' +
+    (_splitValidationMessage ? '<p class="settings-message error">' + escapeHtml(_splitValidationMessage) + '</p>' : '') +
+    '<div class="settings-actions">' +
+    '<button class="button button-secondary" data-action="save-split-draft" data-id="' + escapeHtml(row.id) + '">Save Draft</button>' +
+    '<button class="button button-primary" data-action="save-split-final" data-id="' + escapeHtml(row.id) + '"' + (totals.balanced && lines.length > 0 ? '' : ' disabled') + '>Save Final</button>' +
+    '</div>' +
+    '</div></div>'
+  );
 }
 
 function _attachDelegation(body) {
@@ -342,6 +474,50 @@ function _attachDelegation(body) {
     if (action === 'show-all-synced') {
       _viewMode = 'all';
       await _fetchAndRender(period, 0);
+      return;
+    }
+    if (action === 'select-account-tab') {
+      _filters.accountId = String(button.dataset.accountId || '');
+      await _fetchAndRender(period, 0);
+      return;
+    }
+    if (action === 'toggle-split-details') {
+      const id = String(button.dataset.id || '');
+      if (!id) return;
+      if (_expandedSplitParentIds.has(id)) _expandedSplitParentIds.delete(id);
+      else _expandedSplitParentIds.add(id);
+      _repaint();
+      return;
+    }
+    if (action === 'open-split-editor') {
+      await _openSplitEditor(String(button.dataset.id || ''));
+      return;
+    }
+    if (action === 'close-split-modal') {
+      // Only close if clicking directly on the overlay, not on the modal card or its contents
+      if (event.target !== button) return;
+      _closeSplitEditor();
+      _repaint();
+      return;
+    }
+    if (action === 'add-split-line') {
+      _splitDraftLines = [...(_splitDraftLines || []), { category: '', subcategory: '', amount: 0, note: '' }];
+      _repaint();
+      return;
+    }
+    if (action === 'remove-split-line') {
+      const index = Number.parseInt(button.dataset.index, 10);
+      if (!Number.isFinite(index)) return;
+      _splitDraftLines = (_splitDraftLines || []).filter((_, rowIndex) => rowIndex !== index);
+      _repaint();
+      return;
+    }
+    if (action === 'save-split-draft') {
+      await _saveSplitLines(String(button.dataset.id || ''), false, button);
+      return;
+    }
+    if (action === 'save-split-final') {
+      await _saveSplitLines(String(button.dataset.id || ''), true, button);
       return;
     }
     if (action === 'use-budget-period') {
@@ -372,6 +548,11 @@ function _attachDelegation(body) {
       return;
     }
     if (action === 'close-review-modal') {
+      // Only close if clicking on the backdrop itself or the Close button
+      if (button.className && button.className.includes('modal-backdrop')) {
+        // Only close if clicking directly on backdrop (not a child of it)
+        if (event.target !== button) return;
+      }
       _reviewModalTxId = null;
       _reviewDraft = null;
       _repaint();
@@ -532,6 +713,26 @@ function _attachDelegation(body) {
 
   body.addEventListener('input', (event) => {
     if (getRuleEditorState() && _handleRuleEditorInput(event)) return;
+    if (event.target?.dataset?.splitField) {
+      const field = String(event.target.dataset.splitField || '');
+      const index = Number.parseInt(event.target.dataset.splitIndex, 10);
+      if (!Number.isFinite(index) || index < 0) return;
+      const current = _splitDraftLines[index] || { category: '', subcategory: '', amount: 0, note: '' };
+      const nextLine = { ...current };
+      if (field === 'amount') {
+        nextLine.amount = Number(event.target.value || 0);
+      } else if (field === 'category') {
+        nextLine.category = event.target.value;
+      } else if (field === 'subcategory') {
+        nextLine.subcategory = event.target.value;
+      } else if (field === 'note') {
+        nextLine.note = event.target.value;
+      }
+      _splitDraftLines[index] = nextLine;
+      _splitValidationMessage = '';
+      // Don't repaint on input - just update state. This preserves focus.
+      return;
+    }
     if (event.target?.id !== 'tx-search') return;
 
     _filters.search = event.target.value;
@@ -546,6 +747,138 @@ function _repaint() {
   const body = document.getElementById('page-body');
   if (!body) return;
   _paint(body, getActivePeriod());
+}
+
+async function _openSplitEditor(id) {
+  const row = _rows.find((item) => item.id === id);
+  if (!row) return;
+
+  _splitModalTxId = id;
+  _splitValidationMessage = '';
+  _splitDraftLines = [];
+  _splitDraftIsFinal = false;
+
+  try {
+    const splitData = await getTransactionSplits(id);
+    _splitDraftIsFinal = splitData?.splitIsFinal === true;
+    _splitDraftLines = Array.isArray(splitData?.splits)
+      ? splitData.splits.map((line) => ({
+        category: String(line?.category || ''),
+        subcategory: String(line?.subcategory || ''),
+        amount: Number(line?.amount || 0),
+        note: String(line?.note || ''),
+      }))
+      : [];
+  } catch (err) {
+    _splitValidationMessage = err.message;
+    _splitDraftLines = Array.isArray(row.split_lines)
+      ? row.split_lines.map((line) => ({
+        category: String(line?.category || ''),
+        subcategory: String(line?.subcategory || ''),
+        amount: Number(line?.amount || 0),
+        note: String(line?.note || ''),
+      }))
+      : [];
+  }
+
+  _repaint();
+}
+
+function _closeSplitEditor() {
+  _splitModalTxId = null;
+  _splitDraftLines = [];
+  _splitDraftIsFinal = false;
+  _splitValidationMessage = '';
+}
+
+function _normalizeSplitLinesForSave(lines) {
+  return (lines || [])
+    .map((line) => ({
+      category: String(line?.category || '').trim(),
+      subcategory: String(line?.subcategory || '').trim(),
+      note: String(line?.note || '').trim(),
+      amount: Number(line?.amount || 0),
+    }))
+    .filter((line) => line.category || Math.abs(line.amount) > 0 || line.subcategory || line.note)
+    .map((line) => ({
+      category: line.category,
+      subcategory: line.subcategory,
+      note: line.note,
+      amount: Number(Math.abs(line.amount).toFixed(2)),
+    }));
+}
+
+async function _saveSplitLines(id, isFinal, button) {
+  const row = _rows.find((item) => item.id === id);
+  if (!row) return;
+
+  const splits = _normalizeSplitLinesForSave(_splitDraftLines);
+  const totals = _calculateSplitTotals(row.amount, splits);
+
+  if (isFinal && (!splits.length || !totals.balanced)) {
+    _splitValidationMessage = 'Final save requires at least one split line and an exact total match.';
+    _repaint();
+    return;
+  }
+
+  button.disabled = true;
+  try {
+    await saveTransactionSplits(id, { splits, isFinal });
+
+    _splitValidationMessage = '';
+    _txMessage = isFinal ? 'Split saved.' : 'Split draft saved.';
+    _txMessageType = 'success';
+    _closeSplitEditor();
+    await _fetchAndRender(getActivePeriod(), _pagination.offset);
+    emitAppEvent('budget:transactions-updated');
+  } catch (err) {
+    _splitValidationMessage = err.message;
+    _repaint();
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function _loadAccountTabs() {
+  try {
+    const [accounts, rawLabels] = await Promise.all([
+      getAccounts(),
+      getSetting(ACCOUNT_TAB_LABELS_SETTING_KEY).catch(() => ({})),
+    ]);
+    const customLabels = _normalizeAccountTabLabels(rawLabels);
+    const mapped = Array.isArray(accounts)
+      ? accounts.map((account) => {
+        const accountId = String(account?.id || '');
+        const accountName = String(account?.name || account?.officialName || 'Account').trim();
+        const accountMask = String(account?.mask || '').trim();
+        const defaultLabel = accountMask ? accountName + ' (' + accountMask + ')' : accountName;
+        const customLabel = String(customLabels[accountId] || '').trim();
+        return {
+          id: accountId,
+          label: customLabel || defaultLabel,
+        };
+      }).filter((account) => account.id)
+      : [];
+
+    mapped.sort((a, b) => a.label.localeCompare(b.label));
+    _accountTabs = [{ id: '', label: 'All accounts' }, ...mapped];
+    if (_filters.accountId && !_accountTabs.some((tab) => tab.id === _filters.accountId)) {
+      _filters.accountId = '';
+    }
+  } catch (_err) {
+    _accountTabs = [{ id: '', label: 'All accounts' }];
+  }
+}
+
+function _normalizeAccountTabLabels(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const normalized = {};
+  for (const [accountId, label] of Object.entries(value)) {
+    const key = String(accountId || '').trim();
+    const name = String(label || '').trim();
+    if (key && name) normalized[key] = name;
+  }
+  return normalized;
 }
 
 async function _saveRuleEditor() {

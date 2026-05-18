@@ -50,7 +50,7 @@ export function getSafeMoneyStatus(amount, safetyBuffer, unavailableReason) {
 /**
  * Calculate Safe to Spend.
  *
- * Safe to Spend = budgetIncome + rolloverAmount
+ * Safe to Spend = budgetIncome
  *   - recurringBillsLeftToPay
  *   - expenseBudgetRemaining
  *   - requiredTransfersRemaining
@@ -58,7 +58,6 @@ export function getSafeMoneyStatus(amount, safetyBuffer, unavailableReason) {
  */
 export function calculateSafeToSpend(summaryInputs = {}) {
   const safetyBuffer = Math.max(0, toNumber(summaryInputs.safetyBuffer, DEFAULT_SAFETY_BUFFER));
-  const includeBoaRolloverInSafeToSpend = summaryInputs.includeBoaRolloverInSafeToSpend !== false;
   const includePendingTransactions = !!summaryInputs.includePendingTransactions;
 
   const rawBudgetIncome = summaryInputs.budgetIncome;
@@ -70,12 +69,6 @@ export function calculateSafeToSpend(summaryInputs = {}) {
   const expenseBudgetRemaining = Math.max(0, toNumber(summaryInputs.expenseBudgetRemaining, 0));
   const requiredTransfersRemaining = Math.max(0, toNumber(summaryInputs.requiredTransfersRemaining, 0));
 
-  const rawRolloverAmount = summaryInputs.rolloverAmount;
-  const rolloverAmount = rawRolloverAmount !== null && rawRolloverAmount !== undefined
-    ? toNumber(rawRolloverAmount, 0)
-    : null;
-  const rolloverWarning = String(summaryInputs.rolloverWarning || '').trim();
-
   const warnings = [];
   const blockers = [];
 
@@ -85,23 +78,12 @@ export function calculateSafeToSpend(summaryInputs = {}) {
     blockers.push('Budget Income missing');
   }
 
-  let rolloverUsed = 0;
-  if (includeBoaRolloverInSafeToSpend) {
-    if (rolloverAmount !== null && rolloverAmount > 0) {
-      rolloverUsed = rolloverAmount;
-    } else {
-      warnings.push(rolloverWarning || 'BOA rollover unavailable.');
-      blockers.push('BOA rollover unavailable');
-    }
-  }
-
   if (recurringBillsLeftToPay > 0) blockers.push(recurringBillsLeftToPay + ' recurring bills unpaid');
   if (summaryInputs.expenseOverrun > 0) blockers.push('Expense budget overrun');
   if (requiredTransfersRemaining > 0) blockers.push('Transfer checklist incomplete');
 
   const amount =
     (budgetIncome || 0)
-    + rolloverUsed
     - recurringBillsLeftToPay
     - expenseBudgetRemaining
     - requiredTransfersRemaining
@@ -115,7 +97,6 @@ export function calculateSafeToSpend(summaryInputs = {}) {
     blockers,
     breakdown: {
       budgetIncome: budgetIncome || 0,
-      rolloverUsed,
       recurringBillsLeftToPay,
       expenseBudgetRemaining,
       requiredTransfersRemaining,
@@ -130,7 +111,6 @@ export function calculateSafeToSpend(summaryInputs = {}) {
  *
  * Safe to Transfer = boaCurrentBalance
  *   - unpaidBoaBills
- *   - boaReserve
  *   - pendingBoaSpending
  *   - safetyBuffer
  */
@@ -146,7 +126,6 @@ export function calculateSafeToTransfer(summaryInputs = {}) {
       : null;
 
   const unpaidBoaBills = Math.max(0, toNumber(summaryInputs.unpaidBoaBills, 0));
-  const boaReserve = Math.max(0, toNumber(summaryInputs.boaReserve, 0));
   const pendingBoaSpending = Math.max(0, toNumber(summaryInputs.pendingBoaSpending, 0));
 
   const warnings = [];
@@ -156,7 +135,6 @@ export function calculateSafeToTransfer(summaryInputs = {}) {
   const failShape = {
     boaCurrentBalance: null,
     unpaidBoaBills,
-    boaReserve,
     pendingBoaSpending,
     safetyBuffer,
     finalSafeToTransfer: null,
@@ -173,10 +151,9 @@ export function calculateSafeToTransfer(summaryInputs = {}) {
   }
 
   if (unpaidBoaBills > 0) blockers.push(formatCurrencyLike(unpaidBoaBills) + ' in unpaid BOA bills');
-  if (boaReserve > 0) blockers.push('BOA reserve required');
   if (includePendingTransactions && pendingBoaSpending > 0) blockers.push('Pending BOA spending included');
 
-  const amount = boaCurrentBalance - unpaidBoaBills - boaReserve - pendingBoaSpending - safetyBuffer;
+  const amount = boaCurrentBalance - unpaidBoaBills - pendingBoaSpending - safetyBuffer;
 
   return createSafeMoneyResult({
     amount,
@@ -187,7 +164,6 @@ export function calculateSafeToTransfer(summaryInputs = {}) {
     breakdown: {
       boaCurrentBalance,
       unpaidBoaBills,
-      boaReserve,
       pendingBoaSpending,
       safetyBuffer,
       finalSafeToTransfer: amount,
@@ -205,7 +181,6 @@ export function buildSafeMoneyBreakdown(summaryInputs = {}) {
     safeToSpend,
     safeToTransfer,
     safetyBuffer: toNumber(summaryInputs.safetyBuffer, DEFAULT_SAFETY_BUFFER),
-    includeBoaRolloverInSafeToSpend: summaryInputs.includeBoaRolloverInSafeToSpend !== false,
     includePendingTransactions: !!summaryInputs.includePendingTransactions,
   };
 }

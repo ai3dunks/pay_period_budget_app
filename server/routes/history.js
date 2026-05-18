@@ -77,7 +77,6 @@ function sanitizeHistorySnapshotPayload(payload = {}) {
       billsConfirmed: !!confirmationsSource.billsConfirmed,
       transfersConfirmed: !!confirmationsSource.transfersConfirmed,
       expensesConfirmed: !!confirmationsSource.expensesConfirmed,
-      rolloverConfirmed: !!confirmationsSource.rolloverConfirmed,
     },
     notes: String(payload.notes || ''),
     carryForwardNotes: String(payload.carryForwardNotes || ''),
@@ -86,7 +85,6 @@ function sanitizeHistorySnapshotPayload(payload = {}) {
       regularPaycheck: toNumber(totalsSource.regularPaycheck, 0),
       bonusIncome: toNumber(totalsSource.bonusIncome, 0),
       otherIncome: toNumber(totalsSource.otherIncome, 0),
-      boaRollover: totalsSource.boaRollover === null || totalsSource.boaRollover === undefined ? null : toNumber(totalsSource.boaRollover, 0),
       recurringBillsDue: toNumber(totalsSource.recurringBillsDue, 0),
       recurringBillsPaid: toNumber(totalsSource.recurringBillsPaid, 0),
       recurringBillsLeftToPay: toNumber(totalsSource.recurringBillsLeftToPay, 0),
@@ -160,7 +158,7 @@ router.get('/', (_req, res) => {
     res.json(result);
   } catch (err) {
     console.error('GET /api/history error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to fetch history.' });
   }
 });
 
@@ -204,7 +202,7 @@ router.get('/:id', (req, res) => {
     });
   } catch (err) {
     console.error('GET /api/history/:id error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to fetch history snapshot.' });
   }
 });
 
@@ -254,7 +252,7 @@ router.post('/snapshot', (req, res) => {
       Number(compact.totals.regularPaycheck || 0),
       Number(compact.totals.bonusIncome || 0),
       Number(compact.totals.otherIncome || 0),
-      Number(compact.totals.boaRollover || 0),
+      0,
       Number(compact.totals.recurringBillsDue || 0),
       Number(compact.totals.recurringBillsPaid || 0),
       Number(compact.totals.recurringBillsLeftToPay || 0),
@@ -282,7 +280,7 @@ router.post('/snapshot', (req, res) => {
     res.status(201).json(created);
   } catch (err) {
     console.error('POST /api/history/snapshot error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to create history snapshot.' });
   }
 });
 
@@ -301,7 +299,7 @@ router.delete('/:id', (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     console.error('DELETE /api/history/:id error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to delete history snapshot.' });
   }
 });
 
@@ -329,7 +327,7 @@ router.patch('/:id/notes', (req, res) => {
     res.json(updated);
   } catch (err) {
     console.error('PATCH /api/history/:id/notes error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to update snapshot notes.' });
   }
 });
 

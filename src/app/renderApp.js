@@ -8,7 +8,7 @@ import { emitAppEvent } from './events.js';
 import { getPeriodLabel } from '../utils/formatters.js';
 
 // Page modules
-import { renderSettings, handleConnectPlaid, handleSyncTransactions, handleRemovePlaidItem, handleCleanupRemovedPlaid, handleRulesAdd, handleRulesEdit, handleRulesToggleEnabled, handleSaveRuleEditor, handleRuleEditorChange, handleRuleEditorInput } from '../ui/settings.js';
+import { renderSettings, handleConnectPlaid, handleSyncTransactions, handleRemovePlaidItem, handleRemovePlaidAccount, handleRestorePlaidAccount, handleCleanupRemovedPlaid, handleRulesAdd, handleRulesEdit, handleRulesToggleEnabled, handleSaveRuleEditor, handleRuleEditorChange, handleRuleEditorInput } from '../ui/settings.js';
 import { renderMasterLists } from '../ui/masterLists.js';
 import { renderTransactions, setPendingReviewTransactionId } from '../ui/transactions.js';
 import { renderExpenses } from '../ui/expenses.js';
@@ -25,6 +25,24 @@ import { renderDebtSnowball } from '../ui/debtSnowball.js';
 import { renderCashFlowForecast } from '../ui/cashFlowForecast.js';
 import { syncTransactions } from '../api/plaidApi.js';
 import { API_BASE } from '../api/client.js';
+import { loadCommandCenterSettings, isPageEnabled, PAGE_META } from '../utils/commandCenter.js';
+
+// Map tab IDs to Command Center page keys
+const TAB_PAGE_KEY = {
+  'dashboard': 'dashboard',
+  'transactions': 'transactions',
+  'recurring-bills': 'recurringBills',
+  'expenses': 'expenses',
+  'transfers': 'transfers',
+  'debt-snowball': 'debtSnowball',
+  'cash-flow': 'cashFlowForecast',
+  'reports': 'reports',
+  'data-health': 'dataHealth',
+  'paycheck-planner': 'paycheckPlanner',
+  'history': 'history',
+  'closeout': 'closeout',
+  'master-lists': 'masterLists',
+};
 
 
 // ── Entry point ─────────────────────────────────────────────────────────────
@@ -39,7 +57,13 @@ export function bootApp() {
   _attachGlobalListeners();
 
   // Re-render on rule editor open/close
-  window.addEventListener('app:page-needs-render', () => renderActivePage());
+  window.addEventListener('app:page-needs-render', () => {
+    _renderNav();
+    renderActivePage();
+  });
+  window.addEventListener('app:navigation-needs-render', () => {
+    _renderNav();
+  });
 
   // Cross-module navigation events
   window.addEventListener('app:open-transaction-review', (e) => {
@@ -60,9 +84,16 @@ function _navigate(tabId) {
 
 function _renderNav() {
   const { activeTab } = getAppState();
-  renderNav(activeTab, (tabId) => {
-    if (getAppState().activeTab === tabId) { renderActivePage(); return; }
-    _navigate(tabId);
+  loadCommandCenterSettings().catch(() => null).then((ccSettings) => {
+    const disabledTabs = new Set(
+      Object.entries(TAB_PAGE_KEY)
+        .filter(([, pageKey]) => ccSettings && ccSettings[pageKey]?.pageEnabled === false)
+        .map(([tabId]) => tabId)
+    );
+    renderNav(activeTab, (tabId) => {
+      if (getAppState().activeTab === tabId) { renderActivePage(); return; }
+      _navigate(tabId);
+    }, disabledTabs);
   });
 }
 
@@ -86,6 +117,23 @@ export async function renderActivePage() {
 async function _renderPage(tabId, content) {
   const period = getActivePeriod();
   const periodLabel = getPeriodLabel(period);
+
+  // Check if the page is disabled in the Command Center
+  const pageKey = TAB_PAGE_KEY[tabId];
+  if (pageKey) {
+    const ccSettings = await loadCommandCenterSettings().catch(() => null);
+    if (!isPageEnabled(ccSettings, pageKey)) {
+      const label = (PAGE_META[pageKey] || {}).label || tabId;
+      content.innerHTML =
+        '<div class="card" style="margin-top:2rem;text-align:center;padding:2rem 1rem;">' +
+        '<p style="font-size:1.5rem;margin-bottom:0.5rem;">🚫</p>' +
+        '<h3 style="margin:0 0 0.5rem">' + label + ' is disabled</h3>' +
+        '<p style="color:var(--text-muted);margin:0 0 1rem">This page has been turned off in the Command Center.</p>' +
+        '<button type="button" class="button button-secondary" data-action="open-settings">Go to Settings</button>' +
+        '</div>';
+      return;
+    }
+  }
 
   const _openTab = (nextTab) => {
     if (getAppState().activeTab === nextTab) { renderActivePage(); return; }
@@ -186,6 +234,23 @@ async function _runRecurringBillsAutoDetect(period) {
   return data;
 }
 
+async function _downloadBackup() {
+  const res = await fetch(API_BASE + '/api/backup/export');
+  const data = await res.blob();
+  if (!res.ok) {
+    throw new Error('Backup export failed.');
+  }
+
+  const url = URL.createObjectURL(data);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = 'budget-dashboard-backup-' + new Date().toISOString().slice(0, 10) + '.json';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
 // ── Global event delegation ──────────────────────────────────────────────────
 
 function _attachGlobalListeners() {
@@ -198,10 +263,13 @@ function _attachGlobalListeners() {
     if (action === 'connect-plaid') { await handleConnectPlaid(btn); return; }
     if (action === 'sync-transactions') { await handleSyncTransactions(btn); return; }
     if (action === 'remove-plaid-item') { await handleRemovePlaidItem(btn); return; }
+    if (action === 'remove-plaid-account') { await handleRemovePlaidAccount(btn); return; }
+    if (action === 'restore-plaid-account') { await handleRestorePlaidAccount(btn); return; }
     if (action === 'cleanup-removed-plaid') { await handleCleanupRemovedPlaid(btn); return; }
     if (action === 'data-tools-cleanup-removed-plaid') { await handleCleanupRemovedPlaid(btn); return; }
     if (action === 'data-tools-run-health') { setActiveTab('data-health'); _renderNav(); renderActivePage(); return; }
-    if (action === 'data-tools-export-backup') { window.open(API_BASE + '/api/backup/export', '_blank', 'noopener'); return; }
+    if (action === 'data-tools-export-backup') { await _downloadBackup(); return; }
+    if (action === 'open-settings') { setActiveTab('settings'); _renderNav(); renderActivePage(); return; }
 
     // Rules manager (settings source — transactions.js handles these for its own page)
     if (action === 'rules-add') { await handleRulesAdd(); return; }

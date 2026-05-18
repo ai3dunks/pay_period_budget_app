@@ -82,6 +82,49 @@ function getPeriodTransactions(state) {
     .filter((tx) => isDateInBudgetPeriod(tx.date, period));
 }
 
+function getFinalSplitLines(tx) {
+  const splitLines = Array.isArray(tx?.split_lines) ? tx.split_lines : [];
+  if (!splitLines.length || tx?.split_is_final !== true) return [];
+  return splitLines
+    .map((line) => {
+      const category = String(line?.category || '').trim();
+      const amount = toNumber(line?.amount, 0);
+      if (!category || amount <= 0) return null;
+      return {
+        category,
+        subcategory: String(line?.subcategory || '').trim(),
+        note: String(line?.note || '').trim(),
+        amount,
+      };
+    })
+    .filter(Boolean);
+}
+
+function expandTransactionsWithSplits(transactions = []) {
+  const expanded = [];
+  for (const tx of transactions) {
+    const splitLines = getFinalSplitLines(tx);
+    if (!splitLines.length) {
+      expanded.push(tx);
+      continue;
+    }
+
+    const signedDirection = toNumber(tx.amount, 0) < 0 ? -1 : 1;
+    splitLines.forEach((split) => {
+      expanded.push({
+        ...tx,
+        category: split.category,
+        subcategory: split.subcategory,
+        split_note: split.note,
+        amount: signedDirection * Math.abs(split.amount),
+        split_parent_transaction_id: tx.id,
+        split_is_line: true,
+      });
+    });
+  }
+  return expanded;
+}
+
 function getIncomeSummary(state) {
   const periodTx = getPeriodTransactions(state);
   const periodId = state?.payPeriod?.id;
@@ -209,8 +252,9 @@ export function calculateBillsSummary(state) {
 export function calculateSpendingSummary(state) {
   const includePending = isPendingAllowed(state);
   const periodTx = (state?.transactions || []).map((tx) => ({ ...tx, __period: state?.payPeriod }));
+  const splitAwareTx = expandTransactionsWithSplits(periodTx);
 
-  const eligible = periodTx.filter((tx) => isSpendingTransaction(tx, includePending));
+  const eligible = splitAwareTx.filter((tx) => isSpendingTransaction(tx, includePending));
   const categoryMap = new Map();
   const expenseLookup = new Map(
     (state?.masterList?.expenseList || [])

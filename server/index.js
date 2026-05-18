@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import { requireLocalApiAuth } from './auth.js';
 import plaidRoutes from './routes/plaid.js';
 import transactionsRoutes from './routes/transactions.js';
 import masterListsRoutes from './routes/masterLists.js';
@@ -20,10 +21,13 @@ import cashFlowRoutes from './routes/cashFlow.js';
 
 const app = express();
 const PORT = parseInt(process.env.BACKEND_PORT || '8787', 10);
+const HOST = process.env.BACKEND_HOST || '127.0.0.1';
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
 
 app.use(cors({ origin: FRONTEND_ORIGIN }));
+app.use('/api/backup', express.json({ limit: '10mb' }));
 app.use(express.json({ limit: '1mb' }));
+app.use(requireLocalApiAuth);
 
 app.use('/api/plaid', plaidRoutes);
 app.use('/api/transactions', transactionsRoutes);
@@ -53,6 +57,6 @@ app.use((err, _req, res, next) => {
   return next(err);
 });
 
-app.listen(PORT, () => {
-  console.log(`Budget dashboard backend running on http://localhost:${PORT}`);
+app.listen(PORT, HOST, () => {
+  console.log(`Budget dashboard backend running on http://${HOST}:${PORT}`);
 });

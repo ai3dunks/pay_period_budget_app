@@ -45,7 +45,7 @@ router.get('/adjustments', (req, res) => {
 
     res.json({ adjustments: rows.map(toAdjustmentRow) });
   } catch (err) {
-    res.status(500).json({ error: err.message || 'Failed to load cash flow adjustments.' });
+    res.status(500).json({ error: 'Failed to load cash flow adjustments.' });
   }
 });
 
@@ -75,7 +75,7 @@ router.post('/adjustments', (req, res) => {
     const row = db.prepare('SELECT * FROM cash_flow_forecast_adjustments WHERE id = ?').get(id);
     res.status(201).json({ adjustment: toAdjustmentRow(row) });
   } catch (err) {
-    res.status(400).json({ error: err.message || 'Failed to create adjustment.' });
+    res.status(400).json({ error: 'Failed to create adjustment.' });
   }
 });
 
@@ -124,7 +124,7 @@ router.patch('/adjustments/:id', (req, res) => {
     const row = db.prepare('SELECT * FROM cash_flow_forecast_adjustments WHERE id = ?').get(id);
     res.json({ adjustment: toAdjustmentRow(row) });
   } catch (err) {
-    res.status(400).json({ error: err.message || 'Failed to update adjustment.' });
+    res.status(400).json({ error: 'Failed to update adjustment.' });
   }
 });
 
@@ -137,7 +137,7 @@ router.delete('/adjustments/:id', (req, res) => {
     db.prepare('DELETE FROM cash_flow_forecast_adjustments WHERE id = ?').run(id);
     res.json({ ok: true, id });
   } catch (err) {
-    res.status(500).json({ error: err.message || 'Failed to delete adjustment.' });
+    res.status(500).json({ error: 'Failed to delete adjustment.' });
   }
 });
 

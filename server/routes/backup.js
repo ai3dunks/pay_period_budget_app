@@ -23,6 +23,15 @@ const BACKUP_VERSION = 1;
 const APP_NAME = 'budget-dashboard';
 const MAX_EXPORT_BYTES = 5 * 1024 * 1024;   // 5 MB warn threshold
 const MAX_IMPORT_BYTES = 10 * 1024 * 1024;  // 10 MB hard reject
+const IMPORTABLE_SETTINGS = new Set([
+  'budget_income_by_period',
+  'auto_detected_income_by_period',
+  'safe_money_settings',
+  'include_pending_transactions',
+  'transaction_display_settings',
+  'budget_split_settings',
+  'command_center_settings',
+]);
 
 function nowIso() {
   return new Date().toISOString();
@@ -236,7 +245,7 @@ router.post('/import/preview', (req, res) => {
     });
   } catch (err) {
     console.error('Backup preview failed:', err);
-    res.status(500).json({ ok: false, error: 'Preview failed: ' + err.message });
+    res.status(500).json({ ok: false, error: 'Preview failed.' });
   }
 });
 
@@ -258,6 +267,7 @@ function importSettings(data) {
   let imported = 0;
   for (const row of data.settings) {
     if (!row || !row.key) continue;
+    if (!IMPORTABLE_SETTINGS.has(row.key)) continue;
     stmt.run(row.key, row.value_json ?? null, row.updated_at ?? nowIso());
     imported++;
   }
@@ -592,6 +602,9 @@ router.post('/import', (req, res) => {
     if (!['merge', 'replace_safe_data'].includes(mode)) {
       return res.status(400).json({ ok: false, error: `Unknown import mode: ${mode}` });
     }
+    if (mode === 'replace_safe_data' && req.body.confirmText !== 'REPLACE SAFE DATA') {
+      return res.status(400).json({ ok: false, error: 'Replace confirmation is required.' });
+    }
 
     const { errors, warnings } = validateBackup(backup);
     if (errors.length > 0) {
@@ -667,7 +680,7 @@ router.post('/import', (req, res) => {
     });
   } catch (err) {
     console.error('Backup import failed:', err);
-    res.status(500).json({ ok: false, error: 'Import failed: ' + err.message });
+    res.status(500).json({ ok: false, error: 'Import failed.' });
   }
 });
 

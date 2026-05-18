@@ -10,7 +10,7 @@ import {
   reopenCloseoutRecord,
 } from '../utils/closeoutClient.js';
 
-const BACKEND = 'http://localhost:8787';
+const BACKEND = '';
 
 function getCloseoutConfirmations(record = {}) {
   return {
@@ -18,7 +18,6 @@ function getCloseoutConfirmations(record = {}) {
     billsConfirmed: !!record.bills_confirmed,
     transfersConfirmed: !!record.transfers_confirmed,
     expensesConfirmed: !!record.expenses_confirmed,
-    rolloverConfirmed: !!record.rollover_confirmed,
   };
 }
 
@@ -120,8 +119,6 @@ function buildCloseoutAnalysis({ period, summary, transactions, record }) {
   const overBudgetCategoryCount = Number(summary.expenses?.overBudgetCount || 0);
   const safeSpend = summary.safeMoney?.safeToSpend || { amount: summary.safeToSpend };
   const safeTransfer = summary.safeMoney?.safeToTransfer || { amount: summary.safeToTransfer };
-  const rolloverAvailable = !summary.rollover?.warning && Number(summary.rollover?.amount || 0) > 0;
-  const rolloverUnavailable = !!summary.rollover?.warning || !rolloverAvailable;
 
   const checklist = {
     income: {
@@ -154,13 +151,6 @@ function buildCloseoutAnalysis({ period, summary, transactions, record }) {
       unreviewedTransactionsCount,
       confirmed: !!record?.expenses_confirmed,
     },
-    rollover: {
-      label: 'BOA Rollover',
-      amount: Number(summary.rollover?.amount || 0),
-      source: summary.rollover?.source || 'Unavailable',
-      unavailable: rolloverUnavailable,
-      confirmed: !!record?.rollover_confirmed,
-    },
     history: {
       label: 'History Snapshot',
       snapshotId: record?.snapshot_id || null,
@@ -174,7 +164,6 @@ function buildCloseoutAnalysis({ period, summary, transactions, record }) {
   if (unreviewedTransactionsCount > 0 && !checklist.expenses.confirmed) blockers.push('Unreviewed transactions remain and Expenses are not confirmed.');
   if (unpaidRecurringBillsCount > 0 && !checklist.recurringBills.confirmed) blockers.push('Unpaid recurring bills remain and Bills are not confirmed.');
   if (pendingTransfersCount > 0 && !checklist.transfers.confirmed) blockers.push('Transfer checklist still has pending items.');
-  if (rolloverUnavailable && !checklist.rollover.confirmed) blockers.push('BOA rollover is unavailable.');
   if (overBudgetCategoryCount > 0) warnings.push('Expense categories are over budget.');
   if (Number(safeSpend.amount || 0) < 0) warnings.push('Safe to Spend is negative.');
   if (Number(safeTransfer.amount || 0) < 0) warnings.push('Safe to Transfer is negative.');
@@ -184,11 +173,8 @@ function buildCloseoutAnalysis({ period, summary, transactions, record }) {
   } else {
     warnings.push('Pending transactions are excluded from closeout totals.');
   }
-  if (rolloverUnavailable && checklist.rollover.confirmed) {
-    warnings.push('BOA rollover is unavailable but intentionally confirmed.');
-  }
 
-  const readyToClose = checklist.income.confirmed && checklist.recurringBills.confirmed && checklist.transfers.confirmed && checklist.expenses.confirmed && checklist.rollover.confirmed && blockers.length === 0;
+  const readyToClose = checklist.income.confirmed && checklist.recurringBills.confirmed && checklist.transfers.confirmed && checklist.expenses.confirmed && blockers.length === 0;
 
   return {
     checklist,
@@ -201,8 +187,6 @@ function buildCloseoutAnalysis({ period, summary, transactions, record }) {
     overBudgetCategoryCount,
     safeSpend,
     safeTransfer,
-    rolloverAvailable,
-    rolloverUnavailable,
   };
 }
 
@@ -266,7 +250,7 @@ export async function renderCloseout(container, period, periodLabel) {
     });
     record = await prepareCloseoutRecord(compactPayload);
   } catch (err) {
-    container.innerHTML = '<section class="card"><div class="error-card">' + escapeHtml(err.message.includes('Failed to fetch') ? 'Backend not running on http://localhost:8787.' : err.message || 'Closeout summary could not be built.') + '</div></section>';
+    container.innerHTML = '<section class="card"><div class="error-card">' + escapeHtml(err.message.includes('Failed to fetch') ? 'Backend not reachable through the local API proxy.' : err.message || 'Closeout summary could not be built.') + '</div></section>';
     return;
   }
 
@@ -282,7 +266,6 @@ export async function renderCloseout(container, period, periodLabel) {
     renderMetricCard('Transfers Completed', formatMoney(summary.transfers?.total || 0), 'Planned transfer amount from the shared summary', 'good') +
     renderMetricCard('Cash Remaining', formatMoney(summary.expenses?.remaining || 0), 'After recurring bills and expenses', summary.expenses?.remaining < 0 ? 'danger' : 'good') +
     renderMetricCard('Safe to Spend', formatMoney((summary.safeMoney?.safeToSpend?.amount ?? summary.safeToSpend) || 0), summary.safeMoney?.safeToSpend?.label || 'Shared safe-money result', summary.safeMoney?.safeToSpend?.status === 'danger' ? 'danger' : 'good') +
-    renderMetricCard('BOA Rollover', summary.rollover?.warning ? 'Unavailable' : formatMoney(summary.rollover?.amount || 0), summary.rollover?.warning || (summary.rollover?.source || 'Shared rollover result'), summary.rollover?.warning ? 'warning' : 'good') +
     '</section>';
 
   const checklist = record.checklist || {};
@@ -344,21 +327,6 @@ export async function renderCloseout(container, period, periodLabel) {
       { label: 'Actual spending', value: formatMoney(summary.expenses?.actualTotal || 0) },
       { label: 'Over-budget categories', value: String(summary.expenses?.overBudgetCount || 0) },
       { label: 'Unreviewed transactions', value: String(unreviewedTransactionsCount) },
-    ],
-  });
-
-  const rolloverCard = renderChecklistCard({
-    keyName: 'rollover',
-    title: 'BOA Rollover',
-    checkboxId: 'closeout-rollover',
-    confirmed: !!record.rollover_confirmed,
-    checkboxLabel: 'BOA rollover is correct or intentionally unavailable',
-    tone: summary.rollover?.warning ? 'warning' : 'good',
-    notes: 'Confirm the BOA rollover capture before closing the period.',
-    items: [
-      { label: 'Rollover value', value: summary.rollover?.warning ? 'Unavailable' : formatMoney(summary.rollover?.amount || 0) },
-      { label: 'Source', value: summary.rollover?.source || 'Unavailable' },
-      { label: 'Pending transactions', value: pendingTransactionsCount > 0 ? 'Yes' : 'No' },
     ],
   });
 
@@ -426,7 +394,6 @@ export async function renderCloseout(container, period, periodLabel) {
     billsCard +
     transfersCard +
     expensesCard +
-    rolloverCard +
     historyCard +
     '</section>' +
     notesHtml +
@@ -459,20 +426,18 @@ export async function renderCloseout(container, period, periodLabel) {
           billsConfirmed: undefined,
           transfersConfirmed: undefined,
           expensesConfirmed: undefined,
-          rolloverConfirmed: undefined,
         };
         if (key === 'income') payload.incomeConfirmed = checkbox.checked;
         if (key === 'bills') payload.billsConfirmed = checkbox.checked;
         if (key === 'transfers') payload.transfersConfirmed = checkbox.checked;
         if (key === 'expenses') payload.expensesConfirmed = checkbox.checked;
-        if (key === 'rollover') payload.rolloverConfirmed = checkbox.checked;
         await patchCloseoutRecord(record.id, payload);
         await renderCloseout(container, period, periodLabel);
       } catch (err) {
         const messageEl = document.getElementById('closeout-message');
         if (messageEl) {
           messageEl.className = 'settings-message error';
-          messageEl.textContent = err.message.includes('Failed to fetch') ? 'Backend not running on http://localhost:8787.' : err.message;
+          messageEl.textContent = err.message.includes('Failed to fetch') ? 'Backend not reachable through the local API proxy.' : err.message;
         }
       }
     });
@@ -496,7 +461,7 @@ export async function renderCloseout(container, period, periodLabel) {
       const messageEl = document.getElementById('closeout-message');
       if (messageEl) {
         messageEl.className = 'settings-message error';
-        messageEl.textContent = err.message.includes('Failed to fetch') ? 'Backend not running on http://localhost:8787.' : err.message;
+        messageEl.textContent = err.message.includes('Failed to fetch') ? 'Backend not reachable through the local API proxy.' : err.message;
       }
     }
   });
@@ -527,7 +492,7 @@ export async function renderCloseout(container, period, periodLabel) {
       const messageEl = document.getElementById('closeout-message');
       if (messageEl) {
         messageEl.className = 'settings-message error';
-        messageEl.textContent = err.message.includes('Failed to fetch') ? 'Backend not running on http://localhost:8787.' : err.message;
+        messageEl.textContent = err.message.includes('Failed to fetch') ? 'Backend not reachable through the local API proxy.' : err.message;
       }
     }
   });
@@ -545,7 +510,7 @@ export async function renderCloseout(container, period, periodLabel) {
       const messageEl = document.getElementById('closeout-message');
       if (messageEl) {
         messageEl.className = 'settings-message error';
-        messageEl.textContent = err.message.includes('Failed to fetch') ? 'Backend not running on http://localhost:8787.' : err.message;
+        messageEl.textContent = err.message.includes('Failed to fetch') ? 'Backend not reachable through the local API proxy.' : err.message;
       }
     }
   });
@@ -563,7 +528,7 @@ export async function renderCloseout(container, period, periodLabel) {
       const messageEl = document.getElementById('closeout-message');
       if (messageEl) {
         messageEl.className = 'settings-message error';
-        messageEl.textContent = err.message.includes('Failed to fetch') ? 'Backend not running on http://localhost:8787.' : err.message;
+        messageEl.textContent = err.message.includes('Failed to fetch') ? 'Backend not reachable through the local API proxy.' : err.message;
       }
     }
   });
