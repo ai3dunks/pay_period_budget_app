@@ -404,7 +404,6 @@ export async function renderExpenses(container) {
   body.innerHTML =
     (closeoutRecord?.status === 'closed' ? '<div class="closeout-warning">This period is closed. Reopen it before changing closeout-related data.</div>' : '') +
     '<div class="summary-grid">' + summaryHtml + '</div>' +
-    expenseFundingHtml +
     '<section class="expenses-layout">' +
     (expFeat('showExpenseCategoryManager') ?
       '<div class="expenses-category-panel">' +
@@ -420,6 +419,7 @@ export async function renderExpenses(container) {
     '<p class="card-description">Type = Expense, ignored = false, within the selected budget period.</p></div>' +
     expenseLogHtml +
     '</article>' +
+    expenseFundingHtml +
     (expFeat('showUncategorizedWarnings') ?
       '<aside class="expenses-side-column">' +
       '<article class="card expenses-review-card">' +
