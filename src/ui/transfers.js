@@ -13,6 +13,7 @@ import {
   deleteTransferConfirmation,
 } from '../api/transferConfirmationApi.js';
 import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
+import { getTransactionRowsForPeriod } from '../api/transactionsApi.js';
 
 const BACKEND = '';
 const DEFAULT_BUDGET_SPLIT = { Needs: 60, Wants: 20, 'Debts/Savings': 20 };
@@ -48,8 +49,8 @@ async function fetchMasterLists() {
   return await fetchJson('/api/master-lists');
 }
 
-async function fetchTransactions() {
-  return await fetchJson('/api/transactions');
+async function fetchTransactions(period) {
+  return await getTransactionRowsForPeriod(period);
 }
 
 async function fetchBillStatus(periodId) {
@@ -215,7 +216,7 @@ export async function renderTransfers(container, period, periodLabel) {
   }
 
   try {
-    transactions = await fetchTransactions();
+    transactions = await fetchTransactions(period);
   } catch (err) {
     console.error('Transfers: failed loading transactions:', err);
     transactionsError = 'Transactions could not be loaded.';

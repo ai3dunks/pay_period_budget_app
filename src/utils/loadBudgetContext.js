@@ -1,3 +1,5 @@
+import { getTransactionRowsForPeriod } from '../api/transactionsApi.js';
+
 const BACKEND = '';
 
 async function fetchJson(path) {
@@ -31,7 +33,7 @@ function normalizeSettingMap(value) {
 export async function loadBudgetContext({ period }) {
   const [plaidStatus, transactions, masterLists, recurringBillStatuses, manualIncomeByPeriod, autoDetectedIncomeByPeriod, splitSettings, safeMoneySettings] = await Promise.all([
     fetchJson('/api/plaid/status'),
-    fetchJson('/api/transactions'),
+    getTransactionRowsForPeriod(period),
     fetchJson('/api/master-lists'),
     fetchJson('/api/recurring-bills/status?periodId=' + encodeURIComponent(period.id)).catch(() => []),
     fetchSettingWithFallback('manualIncomeByPeriod', 'budget_income_by_period', {}),

@@ -6,6 +6,7 @@
 import { buildPayPeriodSummary } from '../utils/payPeriodSummary.js';
 import { fetchCloseoutRecord } from '../utils/closeoutClient.js';
 import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
+import { getTransactionRowsForPeriod } from '../api/transactionsApi.js';
 
 const BACKEND = '';
 
@@ -24,11 +25,9 @@ async function fetchRecurringBills() {
   }
 }
 
-async function fetchTransactions() {
+async function fetchTransactions(period) {
   try {
-    const response = await fetch(BACKEND + '/api/transactions');
-    if (!response.ok) throw new Error(`API error: ${response.status}`);
-    return await response.json();
+    return await getTransactionRowsForPeriod(period);
   } catch (err) {
     console.error('Error fetching transactions:', err);
     return [];
@@ -203,7 +202,7 @@ export async function renderRecurringBills(container, period, periodLabel) {
       includePending,
     ] = await Promise.all([
       fetchRecurringBills(),
-      fetchTransactions(),
+      fetchTransactions(period),
       fetchBillStatus(period.id),
       fetchSetting('include_pending_transactions', false),
     ]);

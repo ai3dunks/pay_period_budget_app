@@ -4,6 +4,7 @@ import {
 } from '../utils/budgetCalculations.js';
 import { buildPayPeriodSummary } from '../utils/payPeriodSummary.js';
 import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
+import { getTransactionRowsForPeriod } from '../api/transactionsApi.js';
 
 const BACKEND = '';
 
@@ -78,7 +79,7 @@ async function buildSnapshotSummary(period) {
     plaidStatus,
   ] = await Promise.all([
     fetchJson('/api/master-lists'),
-    fetchJson('/api/transactions'),
+    getTransactionRowsForPeriod(period),
     fetchJson('/api/recurring-bills/status?periodId=' + encodeURIComponent(period.id)).catch(() => []),
     fetchSetting('budget_income_by_period'),
     fetchSetting('auto_detected_income_by_period'),

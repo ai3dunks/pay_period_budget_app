@@ -12,6 +12,7 @@ import {
   deleteBudgetBucket,
   assignTransactionToBucket,
 } from '../api/budgetBucketsApi.js';
+import { getTransactionRowsForPeriod } from '../api/transactionsApi.js';
 
 const BACKEND = '';
 const BUDGET_SPLIT_GROUPS = ['Needs', 'Wants', 'Debts/Savings'];
@@ -93,8 +94,8 @@ async function fetchMasterLists() {
   };
 }
 
-async function fetchTransactions() {
-  return await fetchJson('/api/transactions');
+async function fetchTransactions(period) {
+  return await getTransactionRowsForPeriod(period);
 }
 
 function splitInputId(groupName) {
@@ -301,7 +302,7 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
       ccSettings,
     ] = await Promise.all([
       fetchMasterLists(),
-      fetchTransactions(),
+      fetchTransactions(period),
       fetchBillStatus(period.id),
       fetchSetting('budget_income_by_period'),
       fetchSetting('auto_detected_income_by_period'),

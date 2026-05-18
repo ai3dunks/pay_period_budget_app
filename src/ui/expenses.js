@@ -5,7 +5,7 @@
 import { escapeHtml } from '../utils/dom.js';
 import { formatCurrency, formatSignedCurrency, getPeriodLabel } from '../utils/formatters.js';
 import { isDateInBudgetPeriod } from '../utils/budgetPeriods.js';
-import { getTransactions } from '../api/transactionsApi.js';
+import { getTransactionRowsForPeriod } from '../api/transactionsApi.js';
 import { getMasterLists, getMasterListsCache } from '../api/masterListsApi.js';
 import { fetchCloseoutRecord } from '../utils/closeoutClient.js';
 import { getActivePeriod } from '../app/appState.js';
@@ -131,7 +131,7 @@ export async function renderExpenses(container) {
 
   let transactions;
   try {
-    transactions = await getTransactions();
+    transactions = await getTransactionRowsForPeriod(period);
   } catch (err) {
     const msg = String(err.message || '').includes('Failed to fetch')
       ? 'Backend not reachable through the local API proxy.'
