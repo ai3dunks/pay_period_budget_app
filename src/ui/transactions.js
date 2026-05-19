@@ -3,7 +3,7 @@
  */
 
 import { escapeHtml } from '../utils/dom.js';
-import { getTransactions, getTransactionById, patchTransaction, getTransactionSplits, saveTransactionSplits } from '../api/transactionsApi.js';
+import { getTransactions, getTransactionById, getTransactionRowsForPeriod, patchTransaction, getTransactionSplits, saveTransactionSplits } from '../api/transactionsApi.js';
 import { getMasterLists } from '../api/masterListsApi.js';
 import { applyRules, createRule, previewRule, previewRuleDraft, applyRule, getRules } from '../api/rulesApi.js';
 import { getSetting } from '../api/settingsApi.js';
@@ -25,7 +25,7 @@ import { emitAppEvent } from '../app/events.js';
 import { timeAsync, logRenderTime } from '../utils/performance.js';
 import { getAccounts, getPlaidStatus } from '../api/plaidApi.js';
 import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
-import { createRuleFromTransaction, previewRuleMatches } from '../utils/transactionRules.js';
+import { createRuleFromTransaction, getRuleMatchValueFromTransaction, previewRuleMatches } from '../utils/transactionRules.js';
 
 const TRANSACTION_TYPES_FOR_FILTER = ['Income', 'Expense', 'Bills', 'Wants', 'Transfer', 'Debt Payment', 'Ignore'];
 const PAGE_SIZE_OPTIONS = [50, 100, 250, 500];
@@ -206,6 +206,49 @@ function _decorateRowsWithRuleSuggestions(rows) {
       },
     };
   });
+}
+
+async function _getPeriodRowsForRulePreview() {
+  const period = getActivePeriod();
+  if (period?.startDate && period?.exclusiveEndDate) {
+    try {
+      return await getTransactionRowsForPeriod(period, {
+        ignored: _filters.showIgnored ? undefined : 'false',
+      });
+    } catch (_err) {
+      return _rows;
+    }
+  }
+  return _rows;
+}
+
+function _buildReviewRulePayload(row) {
+  const payload = createRuleFromTransaction(
+    row,
+    document.getElementById('review-type')?.value,
+    document.getElementById('review-category')?.value
+  );
+  payload.name = document.getElementById('review-rule-name')?.value || payload.name;
+  payload.match_type = document.getElementById('review-rule-match-type')?.value || payload.match_type;
+  payload.match_value = document.getElementById('review-rule-match-value')?.value || payload.match_value;
+  payload.confidence_mode = document.getElementById('review-rule-confidence')?.value || 'suggest';
+  payload.apply_reviewed = !!document.getElementById('review-rule-apply-reviewed')?.checked;
+  payload.apply_to_pending = false;
+  payload.apply_to_unreviewed_only = true;
+  return payload;
+}
+
+async function _previewReviewRuleLocally(payload, sourceTransactionId) {
+  const periodRows = await _getPeriodRowsForRulePreview();
+  const matches = previewRuleMatches(payload, periodRows)
+    .filter((match) => String(match.transactionId || match.transaction?.id || '') !== String(sourceTransactionId || ''));
+  return {
+    matchedCount: matches.length,
+    unreviewedMatchedCount: matches.filter((match) => !match.reviewed && !match.transaction?.reviewed).length,
+    reviewedMatchedCount: matches.filter((match) => !!(match.reviewed || match.transaction?.reviewed)).length,
+    pendingMatchedCount: matches.filter((match) => !!(match.pending || match.transaction?.pending)).length,
+    preview: matches,
+  };
 }
 
 function getLastSyncLabel(status) {
@@ -578,6 +621,7 @@ function _renderTransactionDrawerHtml(transaction, draft) {
     return (n < 0 ? '-' : '+') + '$' + Math.abs(n).toFixed(2);
   };
   const rawDescription = getRawDescription(transaction);
+  const defaultRuleMatchValue = getRuleMatchValueFromTransaction(transaction) || getMerchantName(transaction);
   const splitTotal = Array.isArray(transaction.split_lines)
     ? transaction.split_lines.reduce((sum, line) => sum + Math.abs(Number(line?.amount || 0)), 0)
     : 0;
@@ -619,7 +663,7 @@ function _renderTransactionDrawerHtml(transaction, draft) {
     '<div class="form-grid">' +
     '<label class="form-field"><span>Rule name</span><input id="review-rule-name" value="' + escapeHtml(getMerchantName(transaction)) + '"></label>' +
     '<label class="form-field"><span>Match field</span><select id="review-rule-match-type"><option value="merchant_contains">Merchant contains</option><option value="description_contains">Raw description contains</option></select></label>' +
-    '<label class="form-field"><span>Match value</span><input id="review-rule-match-value" value="' + escapeHtml((transaction.merchant_name || getMerchantName(transaction)).trim()) + '"></label>' +
+    '<label class="form-field"><span>Match value</span><input id="review-rule-match-value" value="' + escapeHtml(defaultRuleMatchValue) + '"></label>' +
     '<label class="form-field"><span>Confidence</span><select id="review-rule-confidence"><option value="suggest">Suggest only</option><option value="auto_apply">Auto apply type/category</option></select></label>' +
     '</div>' +
     '<label class="form-field field-checkbox"><input type="checkbox" id="review-rule-apply-current"> <span>Apply to current matching unreviewed transactions too</span></label>' +
@@ -951,24 +995,34 @@ function _attachDelegation(body) {
         let followUpError = '';
         if (shouldCreateRule) {
           const sourceRow = { ...(_rows.find((item) => item.id === id) || _reviewModalRow || {}), ...updatedRow };
-          const payload = createRuleFromTransaction(sourceRow, type, category);
-          payload.name = document.getElementById('review-rule-name')?.value || payload.name;
-          payload.match_type = document.getElementById('review-rule-match-type')?.value || payload.match_type;
-          payload.match_value = document.getElementById('review-rule-match-value')?.value || payload.match_value;
-          payload.confidence_mode = document.getElementById('review-rule-confidence')?.value || 'suggest';
-          payload.apply_reviewed = !!document.getElementById('review-rule-apply-reviewed')?.checked;
-          payload.apply_to_pending = false;
-          payload.apply_to_unreviewed_only = true;
+          const payload = _buildReviewRulePayload(sourceRow);
           const createdRule = await createRule(payload);
           if (document.getElementById('review-rule-apply-current')?.checked && createdRule?.id) {
             try {
               await applyRule(createdRule.id, {
                 periodId: getActivePeriod()?.id,
+                startDate: getActivePeriod()?.startDate,
+                exclusiveEndDate: getActivePeriod()?.exclusiveEndDate,
                 unreviewedOnly: true,
                 excludeTransactionId: id,
               });
             } catch (err) {
-              followUpError = err?.message || 'Failed to apply the new rule to current matches.';
+              if (err?.status === 404) {
+                const localPreview = await _previewReviewRuleLocally(payload, id);
+                const patchable = (localPreview.preview || [])
+                  .filter((match) => !match.transaction?.reviewed)
+                  .filter((match) => !(match.transaction?.pending && !payload.apply_to_pending));
+                for (const match of patchable) {
+                  await patchTransaction(match.transactionId, {
+                    type: match.newType ?? match.updates?.type,
+                    category: match.newCategory ?? match.updates?.category,
+                    reviewed: payload.apply_reviewed === true,
+                    ignored: (match.newType ?? match.updates?.type) === 'Ignore',
+                  });
+                }
+              } else {
+                followUpError = err?.message || 'Failed to apply the new rule to current matches.';
+              }
             }
           }
           _smartRules = await getRules().catch(() => _smartRules);
@@ -1039,16 +1093,14 @@ function _attachDelegation(body) {
       const row = _getReviewModalTransaction();
       const messageEl = document.getElementById('review-rule-preview');
       if (!row || !messageEl) return;
-      const payload = createRuleFromTransaction(row, document.getElementById('review-type')?.value, document.getElementById('review-category')?.value);
-      payload.match_type = document.getElementById('review-rule-match-type')?.value || payload.match_type;
-      payload.match_value = document.getElementById('review-rule-match-value')?.value || payload.match_value;
+      const payload = _buildReviewRulePayload(row);
       messageEl.className = 'settings-message';
       messageEl.textContent = 'Checking matches...';
       try {
         const result = await previewRuleDraft({
           ...payload,
           excludeTransactionId: row.id,
-        }, getActivePeriod()?.id);
+        }, getActivePeriod());
         messageEl.className = 'settings-message success';
         messageEl.textContent =
           'Matched ' + String(result.matchedCount || 0) + ' transaction(s): ' +
@@ -1057,17 +1109,14 @@ function _attachDelegation(body) {
           String(result.pendingMatchedCount || 0) + ' pending.' +
           (result.sourceTransactionExcluded ? ' Source transaction excluded.' : '');
       } catch (err) {
-        const fallbackMatches = previewRuleMatches(payload, _rows).filter((match) => String(match.transactionId || match.transaction?.id || '') !== String(row.id || ''));
+        const result = await _previewReviewRuleLocally(payload, row.id);
         if (err?.status === 404) {
-          const unreviewedCount = fallbackMatches.filter((match) => !match.reviewed && !match.transaction?.reviewed).length;
-          const reviewedCount = fallbackMatches.filter((match) => !!(match.reviewed || match.transaction?.reviewed)).length;
-          const pendingCount = fallbackMatches.filter((match) => !!(match.pending || match.transaction?.pending)).length;
           messageEl.className = 'settings-message success';
           messageEl.textContent =
-            'Matched ' + String(fallbackMatches.length) + ' visible transaction(s): ' +
-            String(unreviewedCount) + ' unreviewed, ' +
-            String(reviewedCount) + ' reviewed, and ' +
-            String(pendingCount) + ' pending. Backend preview route unavailable.';
+            'Matched ' + String(result.matchedCount || 0) + ' transaction(s): ' +
+            String(result.unreviewedMatchedCount || 0) + ' unreviewed, ' +
+            String(result.reviewedMatchedCount || 0) + ' reviewed, and ' +
+            String(result.pendingMatchedCount || 0) + ' pending.';
         } else {
           messageEl.className = 'settings-message error';
           messageEl.textContent = err?.message || 'Failed to preview matches.';
@@ -1093,7 +1142,7 @@ function _attachDelegation(body) {
     if (action === 'rules-preview-one') {
       button.disabled = true;
       try {
-        const result = await previewRule(button.dataset.id, getActivePeriod()?.id);
+        const result = await previewRule(button.dataset.id, getActivePeriod());
         _rulePreviewState = { title: 'Rule Preview', ...result };
         _txMessage = 'Preview ready: ' + String(result.matchedCount || 0) + ' matching transaction(s).';
         _txMessageType = 'success';
@@ -1134,7 +1183,7 @@ function _attachDelegation(body) {
     if (action === 'preview-rules') {
       button.disabled = true;
       try {
-        const result = await applyRules(true);
+        const result = await applyRules(true, getActivePeriod());
         const count = result.matchedCount ?? result.applied ?? result.count ?? 0;
         _txMessage = 'Preview: ' + count + ' transaction(s) would be updated.';
         _txMessageType = 'success';
@@ -1151,7 +1200,7 @@ function _attachDelegation(body) {
     if (action === 'apply-rules') {
       button.disabled = true;
       try {
-        const result = await applyRules(false);
+        const result = await applyRules(false, getActivePeriod());
         const count = result.updatedCount ?? result.applied ?? result.count ?? 0;
         await _fetchAndRender(period, _pagination.offset);
         emitAppEvent('budget:transactions-updated');

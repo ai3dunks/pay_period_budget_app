@@ -94,7 +94,10 @@ function listRules(includeDisabled = true) {
   return db.prepare(sql).all();
 }
 
-function listTransactionsForRules(periodId) {
+function listTransactionsForRules(scope = {}) {
+  const periodId = typeof scope === 'string' ? scope : scope?.periodId;
+  const startDate = typeof scope === 'object' ? scope?.startDate : null;
+  const exclusiveEndDate = typeof scope === 'object' ? scope?.exclusiveEndDate : null;
   const rows = db.prepare(
     `SELECT
       t.id,
@@ -118,12 +121,23 @@ function listTransactionsForRules(periodId) {
     ORDER BY date DESC`
   ).all();
 
+  if (startDate && exclusiveEndDate) {
+    return rows.filter((row) => String(row.date || '').slice(0, 10) >= startDate && String(row.date || '').slice(0, 10) < exclusiveEndDate);
+  }
   if (!periodId) return rows;
   return rows.filter((row) => isDateInSelectedPeriod(row.date, periodId));
 }
 
+function getRuleScope(body = {}) {
+  return {
+    periodId: body?.periodId || null,
+    startDate: body?.startDate || null,
+    exclusiveEndDate: body?.exclusiveEndDate || null,
+  };
+}
+
 function ruleToPreview(rule, periodId) {
-  const transactions = listTransactionsForRules(periodId);
+  const transactions = listTransactionsForRules({ periodId });
   return evaluateRulePreview(rule, transactions).preview;
 }
 
@@ -206,7 +220,7 @@ router.post('/', (req, res) => {
 router.post('/preview-draft', (req, res) => {
   try {
     const rule = normalizeRulePayload(req.body || {}, false);
-    const transactions = listTransactionsForRules(req.body?.periodId || null);
+    const transactions = listTransactionsForRules(getRuleScope(req.body || {}));
     const preview = evaluateRulePreview(rule, transactions, {
       excludeTransactionId: req.body?.excludeTransactionId || rule.created_from_transaction_id || null,
     });
@@ -221,7 +235,7 @@ router.post('/:id/preview', (req, res) => {
   try {
     const rule = db.prepare('SELECT * FROM transaction_rules WHERE id = ?').get(req.params.id);
     if (!rule) return res.status(404).json({ error: 'Rule not found.' });
-    const preview = evaluateRulePreview(rule, listTransactionsForRules(req.body?.periodId || null), {
+    const preview = evaluateRulePreview(rule, listTransactionsForRules(getRuleScope(req.body || {})), {
       excludeTransactionId: req.body?.excludeTransactionId || rule.created_from_transaction_id || null,
     });
     res.json(preview);
@@ -235,7 +249,7 @@ router.post('/:id/apply', (req, res) => {
   try {
     const rule = db.prepare('SELECT * FROM transaction_rules WHERE id = ?').get(req.params.id);
     if (!rule) return res.status(404).json({ error: 'Rule not found.' });
-    const preview = evaluateRulePreview(rule, listTransactionsForRules(req.body?.periodId || null), {
+    const preview = evaluateRulePreview(rule, listTransactionsForRules(getRuleScope(req.body || {})), {
       excludeTransactionId: req.body?.excludeTransactionId || rule.created_from_transaction_id || null,
     });
     const applyToUnreviewedOnly = req.body?.unreviewedOnly === false ? false : true;
@@ -324,9 +338,9 @@ router.delete('/:id', (req, res) => {
 
 router.post('/apply', (req, res) => {
   try {
-    const { periodId = null, dryRun = false } = req.body || {};
+    const { dryRun = false } = req.body || {};
     const rules = listRules(false);
-    const transactions = listTransactionsForRules(periodId);
+    const transactions = listTransactionsForRules(getRuleScope(req.body || {}));
     const preview = [];
     const touchedRuleIds = new Set();
     let updatedCount = 0;
