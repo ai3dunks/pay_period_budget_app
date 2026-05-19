@@ -1,11 +1,15 @@
 import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import db, { safeSqlValue } from '../db.js';
-import { applyRulesToTransactions, previewRuleMatches } from '../../shared/transactionRules.js';
+import { evaluateRulePreview, previewRuleMatches, detectRuleConflicts } from '../../shared/transactionRules.js';
 
 const router = Router();
 const VALID_MATCH_TYPES = new Set(['contains', 'exact', 'starts_with', 'merchant_contains', 'merchant_equals', 'description_contains']);
 const VALID_CONFIDENCE_MODES = new Set(['suggest', 'auto_apply', 'ignore']);
+
+function normalizeComparisonText(value) {
+  return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
 
 function parseIsoDate(value) {
   const parts = String(value || '').slice(0, 10).split('-').map(Number);
@@ -118,24 +122,7 @@ function listTransactionsForRules(periodId) {
 
 function ruleToPreview(rule, periodId) {
   const transactions = listTransactionsForRules(periodId);
-  const matches = previewRuleMatches(rule, transactions);
-  return matches.map((match) => ({
-    transactionId: match.transactionId,
-    ruleId: match.ruleId,
-    ruleName: match.ruleName,
-    date: match.transaction.date,
-    name: match.transaction.name,
-    merchantName: match.transaction.merchant_name,
-    accountId: match.transaction.account_id,
-    pending: !!match.transaction.pending,
-    reviewed: !!match.transaction.reviewed,
-    currentType: match.transaction.type,
-    currentCategory: match.transaction.category,
-    newType: match.updates.type ?? match.transaction.type ?? null,
-    newCategory: match.updates.category ?? match.transaction.category ?? null,
-    newReviewed: match.updates.reviewed === true,
-    confidenceMode: rule.confidence_mode || 'suggest',
-  }));
+  return evaluateRulePreview(rule, transactions).preview;
 }
 
 router.get('/', (_req, res) => {
@@ -153,18 +140,22 @@ router.post('/', (req, res) => {
     const duplicate = db.prepare(
       `SELECT id FROM transaction_rules
        WHERE enabled = 1
-         AND LOWER(COALESCE(match_type, '')) = LOWER(?)
-         AND LOWER(COALESCE(match_value, '')) = LOWER(?)
-         AND COALESCE(account_id, '') = COALESCE(?, '')
-         AND COALESCE(set_type, '') = COALESCE(?, '')
-         AND COALESCE(set_category, '') = COALESCE(?, '')
+         AND LOWER(TRIM(COALESCE(match_type, ''))) = ?
+         AND LOWER(TRIM(COALESCE(match_value, ''))) = ?
+         AND LOWER(TRIM(COALESCE(account_id, ''))) = ?
+         AND LOWER(TRIM(COALESCE(apply_type, set_type, ''))) = ?
+         AND LOWER(TRIM(COALESCE(apply_category, set_category, ''))) = ?
+         AND LOWER(TRIM(COALESCE(set_type, apply_type, ''))) = ?
+         AND LOWER(TRIM(COALESCE(set_category, apply_category, ''))) = ?
        LIMIT 1`
     ).get(
-      payload.match_type,
-      payload.match_value,
-      safeSqlValue(payload.account_id),
-      safeSqlValue(payload.set_type),
-      safeSqlValue(payload.set_category)
+      normalizeComparisonText(payload.match_type),
+      normalizeComparisonText(payload.match_value),
+      normalizeComparisonText(payload.account_id),
+      normalizeComparisonText(payload.apply_type ?? payload.set_type),
+      normalizeComparisonText(payload.apply_category ?? payload.set_category),
+      normalizeComparisonText(payload.set_type ?? payload.apply_type),
+      normalizeComparisonText(payload.set_category ?? payload.apply_category)
     );
     if (duplicate) return res.status(409).json({ error: 'A matching rule with the same action already exists.', duplicateId: duplicate.id });
     const id = randomUUID();
@@ -210,12 +201,24 @@ router.post('/', (req, res) => {
   }
 });
 
+router.post('/preview-draft', (req, res) => {
+  try {
+    const rule = normalizeRulePayload(req.body || {}, false);
+    const transactions = listTransactionsForRules(req.body?.periodId || null);
+    const preview = evaluateRulePreview(rule, transactions);
+    res.json(preview);
+  } catch (err) {
+    console.error('POST /api/rules/preview-draft error:', err);
+    res.status(400).json({ error: 'Failed to preview rule.' });
+  }
+});
+
 router.post('/:id/preview', (req, res) => {
   try {
     const rule = db.prepare('SELECT * FROM transaction_rules WHERE id = ?').get(req.params.id);
     if (!rule) return res.status(404).json({ error: 'Rule not found.' });
-    const preview = ruleToPreview(rule, req.body?.periodId || null);
-    res.json({ matchedCount: preview.length, preview });
+    const preview = evaluateRulePreview(rule, listTransactionsForRules(req.body?.periodId || null));
+    res.json(preview);
   } catch (err) {
     console.error('POST /api/rules/:id/preview error:', err);
     res.status(500).json({ error: 'Failed to preview rule.' });
@@ -226,23 +229,42 @@ router.post('/:id/apply', (req, res) => {
   try {
     const rule = db.prepare('SELECT * FROM transaction_rules WHERE id = ?').get(req.params.id);
     if (!rule) return res.status(404).json({ error: 'Rule not found.' });
-    const preview = ruleToPreview(rule, req.body?.periodId || null);
-    const targets = req.body?.unreviewedOnly === false ? preview : preview.filter((row) => !row.reviewed);
-    const stmt = db.prepare('UPDATE transactions SET type = ?, category = ?, reviewed = ?, updated_at = ? WHERE id = ?');
+    const preview = evaluateRulePreview(rule, listTransactionsForRules(req.body?.periodId || null));
+    const applyToUnreviewedOnly = req.body?.unreviewedOnly === false ? false : true;
+    const stmt = db.prepare('UPDATE transactions SET type = ?, category = ?, reviewed = ?, ignored = ?, updated_at = ? WHERE id = ?');
     const now = new Date().toISOString();
     let updatedCount = 0;
-    for (const row of targets) {
+    let skippedPendingCount = 0;
+    let skippedReviewedCount = 0;
+    for (const row of preview.preview) {
+      if (!row.willApply) {
+        if (row.skipReason === 'pending') skippedPendingCount += 1;
+        if (row.skipReason === 'reviewed') skippedReviewedCount += 1;
+        continue;
+      }
+      if (applyToUnreviewedOnly && row.reviewed) {
+        skippedReviewedCount += 1;
+        continue;
+      }
       const result = stmt.run(
         safeSqlValue(row.newType),
         safeSqlValue(row.newCategory),
         row.newReviewed ? 1 : 0,
+        row.newType === 'Ignore' || row.newCategory === 'Ignore' ? 1 : 0,
         now,
         row.transactionId
       );
       if (result.changes > 0) updatedCount++;
     }
     db.prepare('UPDATE transaction_rules SET last_applied_at = ?, updated_at = ? WHERE id = ?').run(now, now, req.params.id);
-    res.json({ matchedCount: preview.length, updatedCount, preview });
+    res.json({
+      matchedCount: preview.matchedCount,
+      updatedCount,
+      skippedPendingCount,
+      skippedReviewedCount,
+      skippedConflictCount: preview.skippedConflictCount || 0,
+      preview: preview.preview,
+    });
   } catch (err) {
     console.error('POST /api/rules/:id/apply error:', err);
     res.status(500).json({ error: 'Failed to apply rule.' });
@@ -297,40 +319,40 @@ router.post('/apply', (req, res) => {
     const { periodId = null, dryRun = false } = req.body || {};
     const rules = listRules(false);
     const transactions = listTransactionsForRules(periodId);
-    const matches = applyRulesToTransactions(transactions, rules);
-
-    const preview = matches.map((match) => ({
-      transactionId: match.transactionId,
-      ruleId: match.ruleId,
-      ruleName: match.ruleName,
-      date: match.transaction.date,
-      name: match.transaction.name,
-      merchantName: match.transaction.merchant_name,
-      currentType: match.transaction.type,
-      currentCategory: match.transaction.category,
-      newType: match.updates.type ?? match.transaction.type ?? null,
-      newCategory: match.updates.category ?? match.transaction.category ?? null,
-      newIgnored: match.updates.ignored === true,
-    }));
-
+    const preview = [];
+    const touchedRuleIds = new Set();
     let updatedCount = 0;
+    let skippedPendingCount = 0;
+    let skippedReviewedCount = 0;
+
     if (!dryRun) {
       const stmt = db.prepare(
         'UPDATE transactions SET type = ?, category = ?, ignored = ?, reviewed = ?, updated_at = ? WHERE id = ?'
       );
       const now = new Date().toISOString();
-      const touchedRuleIds = new Set();
-      for (const match of matches) {
-        const result = stmt.run(
-          safeSqlValue(match.updates.type ?? match.transaction.type ?? null),
-          safeSqlValue(match.updates.category ?? match.transaction.category ?? null),
-          match.updates.ignored ? 1 : 0,
-          match.updates.reviewed ? 1 : 0,
-          now,
-          match.transactionId
-        );
-        if (result.changes > 0) updatedCount++;
-        if (match.ruleId) touchedRuleIds.add(match.ruleId);
+      for (const transaction of transactions) {
+        for (const rule of rules) {
+          const evaluation = evaluateRulePreview(rule, [transaction]);
+          const row = evaluation.preview[0];
+          if (!row) continue;
+          preview.push(row);
+          if (!row.willApply) {
+            if (row.skipReason === 'pending') skippedPendingCount += 1;
+            if (row.skipReason === 'reviewed') skippedReviewedCount += 1;
+            continue;
+          }
+          const result = stmt.run(
+            safeSqlValue(row.newType ?? transaction.type ?? null),
+            safeSqlValue(row.newCategory ?? transaction.category ?? null),
+            row.newType === 'Ignore' || row.newCategory === 'Ignore' ? 1 : 0,
+            row.newReviewed ? 1 : 0,
+            now,
+            transaction.id
+          );
+          if (result.changes > 0) updatedCount++;
+          if (rule.id) touchedRuleIds.add(rule.id);
+          break;
+        }
       }
       for (const ruleId of touchedRuleIds) {
         db.prepare('UPDATE transaction_rules SET last_applied_at = ?, updated_at = ? WHERE id = ?').run(now, now, ruleId);
@@ -344,8 +366,11 @@ router.post('/apply', (req, res) => {
     }
 
     res.json({
-      matchedCount: matches.length,
+      matchedCount: preview.length,
       updatedCount,
+      skippedPendingCount,
+      skippedReviewedCount,
+      skippedConflictCount: 0,
       preview,
     });
   } catch (err) {

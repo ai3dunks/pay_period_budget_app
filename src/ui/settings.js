@@ -26,6 +26,8 @@ import {
   renderRuleEditorModalHtml,
   setRuleEditorError,
   updateRuleEditorDraftField,
+  getConfidenceModeLabel,
+  renderRulePreviewTableHtml,
 } from './rulesManager.js';
 import { emitAppEvent } from '../app/events.js';
 import {
@@ -51,6 +53,7 @@ import {
   getTransferTargetsConfig,
   isTransferTargetsConfigMissing,
 } from '../utils/transferTargets.js';
+import { detectRuleConflicts } from '../utils/transactionRules.js';
 
 // ── page-level state ────────────────────────────────────────────────────────
 let _rulesMessage = '';
@@ -62,6 +65,7 @@ let _ccMessageType = 'success';
 let _transferTargetsMessage = '';
 let _transferTargetsMessageType = 'success';
 let _editingTransferTargetId = '';
+let _rulesPreviewState = null;
 let _ccSettings = null; // cached command center settings during a render cycle
 const ACCOUNT_TAB_LABELS_SETTING_KEY = 'account_tab_labels';
 const TRANSFER_TARGETS_SETTING_KEY = 'transfer_targets';
@@ -134,6 +138,8 @@ export async function renderSettings(container) {
   if (_editingTransferTargetId && !transferTargets.some((target) => target.id === _editingTransferTargetId)) {
     _editingTransferTargetId = '';
   }
+  const ruleConflictMap = detectRuleConflicts(rules);
+  const hasRuleConflicts = ruleConflictMap.size > 0;
   const settingsFeat = (key) => isFeatureEnabled(_ccSettings, 'settings', key);
 
   const accountLabelRows = activeAccounts.length
@@ -154,14 +160,17 @@ export async function renderSettings(container) {
     : '<tr><td colspan="3">Connect a bank account to customize tab names.</td></tr>';
 
   const rulesRows = rules.length
-    ? rules.map((rule) =>
+    ? rules.map((rule) => {
+        const conflict = ruleConflictMap.get(rule.id);
+        return (
         '<tr>' +
         '<td>' + (rule.enabled ? '<span class="status-reviewed">Enabled</span>' : '<span class="status-needs-review">Disabled</span>') + '</td>' +
         '<td>' + escapeHtml(rule.name || '-') + '</td>' +
         '<td>' + escapeHtml((rule.match_type || 'contains').replaceAll('_', ' ') + ' "' + (rule.match_value || '') + '"') + '</td>' +
         '<td>' + escapeHtml((rule.set_type || rule.apply_type || '-') + ' / ' + (rule.set_category || rule.apply_category || '-')) + '</td>' +
-        '<td>' + escapeHtml(rule.confidence_mode || 'suggest') + '</td>' +
+        '<td>' + escapeHtml(getConfidenceModeLabel(rule.confidence_mode || 'suggest')) + '</td>' +
         '<td>' + escapeHtml(rule.last_applied_at ? new Date(rule.last_applied_at).toLocaleString() : '-') + '</td>' +
+        '<td>' + (conflict ? '<span class="status-needs-review">Conflict</span>' : '<span class="status-reviewed">Clear</span>') + '</td>' +
         '<td class="inline-actions">' +
         '<button class="button button-secondary button-sm" data-action="rules-edit" data-id="' + escapeHtml(rule.id) + '">Edit</button>' +
         '<button class="button button-secondary button-sm" data-action="rules-preview-one" data-id="' + escapeHtml(rule.id) + '">Preview</button>' +
@@ -169,8 +178,9 @@ export async function renderSettings(container) {
         '<button class="button button-secondary button-sm" data-action="rules-toggle-enabled" data-id="' + escapeHtml(rule.id) + '" data-enabled="' + (rule.enabled ? '1' : '0') + '">' + (rule.enabled ? 'Disable' : 'Enable') + '</button>' +
         '<button class="button button-secondary button-sm" data-action="rules-delete" data-id="' + escapeHtml(rule.id) + '">Delete</button>' +
         '</td></tr>'
-      ).join('')
-    : '<tr><td colspan="7">No rules yet.</td></tr>';
+      );
+      }).join('')
+    : '<tr><td colspan="8">No rules yet.</td></tr>';
 
   const activeAccountsRows = activeAccounts.length
     ? activeAccounts.map((account) => {
@@ -208,7 +218,8 @@ export async function renderSettings(container) {
     }).join('')
     : '<tr><td colspan="4">No excluded accounts.</td></tr>';
 
-  const ruleEditorHtml = renderRuleEditorModalHtml(activeAccounts);
+  const ruleEditorHtml = renderRuleEditorModalHtml(activeAccounts, { showDraftPreviewButton: false });
+  const rulesPreviewHtml = _rulesPreviewState ? renderRulePreviewTableHtml(_rulesPreviewState, { title: _rulesPreviewState.title || 'Rule Preview' }) : '';
 
   body.innerHTML =
     (settingsFeat('showPlaidConnections') ?
@@ -247,9 +258,10 @@ export async function renderSettings(container) {
     (settingsFeat('showRulesManager') ?
       '<section class="card settings-section">' +
       '<div class="card-header"><h3 class="card-title">Rules</h3><p class="card-description">Manage saved transaction classification rules.</p></div>' +
+      (hasRuleConflicts ? '<div class="dashboard-alert warning"><strong>Some rules overlap.</strong><div>Priority decides which rule wins.</div></div>' : '') +
       (_rulesMessage ? '<p class="settings-message ' + (_rulesMessageType === 'error' ? 'error' : 'success') + '">' + escapeHtml(_rulesMessage) + '</p>' : '') +
       '<div class="settings-actions"><button class="button button-secondary" data-action="rules-add">Add Rule</button></div>' +
-      '<div class="table-wrap"><table class="table"><thead><tr><th>Status</th><th>Rule Name</th><th>Match</th><th>Applies</th><th>Confidence</th><th>Last Used</th><th>Actions</th></tr></thead>' +
+      '<div class="table-wrap"><table class="table"><thead><tr><th>Status</th><th>Rule Name</th><th>Match</th><th>Applies</th><th>Confidence</th><th>Last Used</th><th>Conflict</th><th>Actions</th></tr></thead>' +
       '<tbody>' + rulesRows + '</tbody></table></div>' +
       '</section>' : '') +
 
@@ -283,7 +295,8 @@ export async function renderSettings(container) {
 
     (settingsFeat('showCommandCenter') ? _renderCommandCenterSection(_ccSettings) : '') +
 
-    ruleEditorHtml;
+    ruleEditorHtml +
+    rulesPreviewHtml;
 
   // Per-render listeners (safe-money only — Plaid actions handled globally)
   body.querySelector('[data-action="safe-money-save"]')?.addEventListener('click', async () => {
@@ -745,7 +758,8 @@ export async function handleRulePreview(btn) {
   btn.dataset.loading = 'true';
   try {
     const result = await previewRule(btn.dataset.id);
-    _rulesMessage = 'Preview: this rule matches ' + String(result.matchedCount || 0) + ' existing transaction(s).';
+    _rulesPreviewState = { title: 'Rule Preview', ...result };
+    _rulesMessage = 'Preview ready: ' + String(result.matchedCount || 0) + ' matching transaction(s).';
     _rulesMessageType = 'success';
     const content = document.getElementById('page-content');
     if (content) await renderSettings(content);
@@ -765,7 +779,8 @@ export async function handleRuleApply(btn) {
   btn.dataset.loading = 'true';
   try {
     const result = await applyRule(btn.dataset.id, { unreviewedOnly: true });
-    _rulesMessage = 'Rule applied to ' + String(result.updatedCount || 0) + ' current unreviewed matching transaction(s).';
+    _rulesPreviewState = null;
+    _rulesMessage = 'Rule applied: ' + String(result.updatedCount || 0) + ' updated, ' + String(result.skippedPendingCount || 0) + ' pending skipped, ' + String(result.skippedReviewedCount || 0) + ' reviewed skipped.';
     _rulesMessageType = 'success';
     emitAppEvent('budget:transactions-updated');
     const content = document.getElementById('page-content');
@@ -781,6 +796,12 @@ export async function handleRuleApply(btn) {
   }
 }
 
+export async function handleRulePreviewClose() {
+  _rulesPreviewState = null;
+  const content = document.getElementById('page-content');
+  if (content) await renderSettings(content);
+}
+
 export async function handleRuleDelete(btn) {
   const confirmed = window.confirm('Delete this rule? Transactions will not be deleted.');
   if (!confirmed) return;
@@ -788,6 +809,7 @@ export async function handleRuleDelete(btn) {
   btn.dataset.loading = 'true';
   try {
     await deleteRule(btn.dataset.id);
+    _rulesPreviewState = null;
     _rulesMessage = 'Rule deleted. Transactions were not changed.';
     _rulesMessageType = 'success';
     const content = document.getElementById('page-content');

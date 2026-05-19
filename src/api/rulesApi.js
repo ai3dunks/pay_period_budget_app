@@ -26,6 +26,13 @@ export function previewRule(id, periodId) {
   });
 }
 
+export function previewRuleDraft(payload, periodId) {
+  return apiPost('/api/rules/preview-draft', {
+    ...(payload || {}),
+    periodId: periodId || undefined,
+  });
+}
+
 export function applyRule(id, options = {}) {
   return apiPost('/api/rules/' + encodeURIComponent(id) + '/apply', options || {});
 }

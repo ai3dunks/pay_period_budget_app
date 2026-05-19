@@ -5,7 +5,7 @@
 import { escapeHtml } from '../utils/dom.js';
 import { getTransactions, getTransactionById, patchTransaction, getTransactionSplits, saveTransactionSplits } from '../api/transactionsApi.js';
 import { getMasterLists } from '../api/masterListsApi.js';
-import { applyRules, createRule, previewRule, applyRule, getRules } from '../api/rulesApi.js';
+import { applyRules, createRule, previewRule, previewRuleDraft, applyRule, getRules } from '../api/rulesApi.js';
 import { getSetting } from '../api/settingsApi.js';
 import { getActivePeriod } from '../app/appState.js';
 import { getPeriodLabel } from '../utils/formatters.js';
@@ -18,6 +18,7 @@ import {
   renderRuleEditorModalHtml,
   setRuleEditorError,
   updateRuleEditorDraftField,
+  renderRulePreviewTableHtml,
 } from './rulesManager.js';
 import { normalizeReviewDraft } from './transactionReviewModal.js';
 import { emitAppEvent } from '../app/events.js';
@@ -78,6 +79,8 @@ let _pendingHiddenBySettings = false;
 let _filtersModalOpen = false;
 let _smartRules = [];
 let _rulePreviewMessage = '';
+let _ruleEditorAccounts = [];
+let _rulePreviewState = null;
 const ACCOUNT_TAB_LABELS_SETTING_KEY = 'account_tab_labels';
 
 export function setPendingReviewTransactionId(id) {
@@ -97,6 +100,31 @@ function _openReviewModalForTransaction(row) {
     ignored: !!row.ignored,
   });
   return true;
+}
+
+function _buildRuleDraftFromEditor() {
+  const state = getRuleEditorState();
+  if (!state?.draft) return null;
+  return {
+    name: state.draft.name || state.draft.match_value,
+    enabled: state.draft.enabled,
+    match_type: state.draft.match_type,
+    match_value: state.draft.match_value,
+    account_id: state.draft.account_id || null,
+    amount_min: state.draft.amount_min === '' ? null : state.draft.amount_min,
+    amount_max: state.draft.amount_max === '' ? null : state.draft.amount_max,
+    priority: state.draft.priority,
+    set_type: state.draft.set_ignored ? 'Ignore' : state.draft.set_type,
+    set_category: state.draft.set_ignored ? 'Ignore' : state.draft.set_category,
+    apply_type: state.draft.set_ignored ? 'Ignore' : state.draft.set_type,
+    apply_category: state.draft.set_ignored ? 'Ignore' : state.draft.set_category,
+    apply_reviewed: state.draft.apply_reviewed,
+    confidence_mode: state.draft.confidence_mode,
+    apply_to_pending: state.draft.apply_to_pending,
+    set_ignored: state.draft.set_ignored,
+    apply_to_unreviewed_only: state.draft.apply_to_unreviewed_only,
+    created_from_transaction_id: state.draft.created_from_transaction_id || null,
+  };
 }
 
 function _getReviewModalTransaction() {
@@ -250,10 +278,6 @@ export async function renderTransactions(container) {
   _attachDelegation(body);
   await _loadAccountTabs();
   const period = getActivePeriod();
-  if ((_smartRules || []).some((rule) => !!rule.enabled && String(rule.confidence_mode || 'suggest') === 'auto_apply')) {
-    await applyRules(false, period?.id).catch(() => null);
-  }
-
   try {
     await _fetchAndStore(period, 0);
   } catch (err) {
@@ -482,7 +506,9 @@ function _paint(body, period) {
   const splitModalHtml = splitModalTx ? _renderSplitModalHtml(splitModalTx) : '';
 
   const filterModalHtml = _filtersModalOpen ? _renderFiltersModalHtml({ categoryFilterOptions, txFeat }) : '';
-  body.innerHTML = headerHtml + tableHtml + _renderPaginationControls('pagination-bottom') + '</section>' + filterModalHtml + modalHtml + splitModalHtml + renderRuleEditorModalHtml(_rows);
+  const ruleEditorHtml = renderRuleEditorModalHtml(_ruleEditorAccounts, { showDraftPreviewButton: true });
+  const rulePreviewHtml = _rulePreviewState ? renderRulePreviewTableHtml(_rulePreviewState, { title: _rulePreviewState.title || 'Rule Preview' }) : '';
+  body.innerHTML = headerHtml + tableHtml + _renderPaginationControls('pagination-bottom') + '</section>' + filterModalHtml + modalHtml + splitModalHtml + ruleEditorHtml + rulePreviewHtml;
   logRenderTime('transactions.paint', renderStartedAt);
 }
 
@@ -1025,7 +1051,8 @@ function _attachDelegation(body) {
       button.disabled = true;
       try {
         const result = await previewRule(button.dataset.id, getActivePeriod()?.id);
-        _txMessage = 'Preview: this rule matches ' + String(result.matchedCount || 0) + ' existing transaction(s).';
+        _rulePreviewState = { title: 'Rule Preview', ...result };
+        _txMessage = 'Preview ready: ' + String(result.matchedCount || 0) + ' matching transaction(s).';
         _txMessageType = 'success';
         _repaint();
       } catch (err) {
@@ -1035,6 +1062,30 @@ function _attachDelegation(body) {
       } finally {
         button.disabled = false;
       }
+      return;
+    }
+    if (action === 'preview-rule-draft') {
+      button.disabled = true;
+      try {
+        const draft = _buildRuleDraftFromEditor();
+        if (!draft) throw new Error('Rule draft is not available.');
+        const result = await previewRuleDraft(draft, getActivePeriod()?.id);
+        _rulePreviewState = { title: 'Draft Rule Preview', ...result };
+        _txMessage = 'Preview ready: ' + String(result.matchedCount || 0) + ' matching transaction(s).';
+        _txMessageType = 'success';
+        _repaint();
+      } catch (err) {
+        _txMessage = err.message;
+        _txMessageType = 'error';
+        _repaint();
+      } finally {
+        button.disabled = false;
+      }
+      return;
+    }
+    if (action === 'close-rule-preview') {
+      _rulePreviewState = null;
+      _repaint();
       return;
     }
     if (action === 'preview-rules') {
@@ -1319,6 +1370,7 @@ async function _loadAccountTabs() {
       getAccounts(),
       getSetting(ACCOUNT_TAB_LABELS_SETTING_KEY).catch(() => ({})),
     ]);
+    _ruleEditorAccounts = Array.isArray(accounts) ? accounts : [];
     const customLabels = _normalizeAccountTabLabels(rawLabels);
     const mapped = Array.isArray(accounts)
       ? accounts.map((account) => {
@@ -1340,6 +1392,7 @@ async function _loadAccountTabs() {
       _filters.accountId = '';
     }
   } catch (_err) {
+    _ruleEditorAccounts = [];
     _accountTabs = [{ id: '', label: 'All accounts' }];
   }
 }

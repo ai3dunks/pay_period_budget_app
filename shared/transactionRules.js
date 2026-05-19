@@ -32,6 +32,10 @@ function toBooleanFlag(value) {
   return value === true || value === 1 || value === '1';
 }
 
+function normalizeComparisonText(value) {
+  return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
 function getOriginalDescription(transaction) {
   if (!transaction?.raw_json) return '';
   try {
@@ -131,6 +135,110 @@ function buildRuleUpdate(transaction, rule) {
   };
 }
 
+export function getRuleComparisonKey(rule = {}) {
+  return [
+    normalizeComparisonText(rule.match_type || rule.match_operator || 'contains'),
+    normalizeComparisonText(rule.match_value),
+    normalizeComparisonText(rule.account_id),
+    normalizeComparisonText(rule.apply_type ?? rule.set_type),
+    normalizeComparisonText(rule.apply_category ?? rule.set_category),
+    normalizeComparisonText(rule.set_type),
+    normalizeComparisonText(rule.set_category),
+  ].join('|');
+}
+
+export function detectRuleConflicts(rules = []) {
+  const activeRules = (rules || []).filter((rule) => toBooleanFlag(rule.enabled));
+  const groups = new Map();
+  const conflictsByRuleId = new Map();
+
+  for (const rule of activeRules) {
+    const key = getRuleComparisonKey(rule);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(rule);
+  }
+
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const samePriority = group.every((rule) => Number(rule.priority ?? 100) === Number(group[0].priority ?? 100));
+    const hasIgnore = group.some((rule) => toBooleanFlag(rule.set_ignored));
+    const hasAutoApply = group.some((rule) => String(rule.confidence_mode || 'suggest') === 'auto_apply');
+    const actionSignature = new Set(group.map((rule) => [
+      normalizeComparisonText(rule.apply_type ?? rule.set_type),
+      normalizeComparisonText(rule.apply_category ?? rule.set_category),
+      toBooleanFlag(rule.set_ignored) ? 'ignored' : 'categorized',
+    ].join('|')));
+
+    if (actionSignature.size > 1 || hasIgnore || (samePriority && hasAutoApply)) {
+      for (const rule of group) {
+        conflictsByRuleId.set(rule.id, {
+          conflictCount: group.length - 1,
+          samePriority,
+          hasIgnore,
+        });
+      }
+    }
+  }
+
+  return conflictsByRuleId;
+}
+
+export function evaluateRulePreview(rule, transactions = [], options = {}) {
+  const rows = [];
+  let matchedCount = 0;
+  let updatedCount = 0;
+  let skippedPendingCount = 0;
+  let skippedReviewedCount = 0;
+
+  for (const transaction of transactions || []) {
+    if (!transactionMatchesRule(transaction, rule)) continue;
+    matchedCount += 1;
+    const updates = buildRuleUpdate(transaction, rule);
+    const pendingBlocked = !!transaction?.pending && !toBooleanFlag(rule.apply_to_pending);
+    const reviewedBlocked = !!transaction?.reviewed && rule.apply_to_unreviewed_only !== false;
+    const skipped = pendingBlocked || reviewedBlocked;
+
+    if (pendingBlocked) skippedPendingCount += 1;
+    if (reviewedBlocked) skippedReviewedCount += 1;
+
+    rows.push({
+      transactionId: transaction.id,
+      transaction,
+      ruleId: rule.id,
+      ruleName: rule.name || rule.match_value,
+      updates,
+      pending: !!transaction?.pending,
+      reviewed: !!transaction?.reviewed,
+      pendingLabel: transaction?.pending ? 'Pending' : 'Posted',
+      reviewedLabel: transaction?.reviewed ? 'Reviewed' : 'Needs review',
+      currentType: transaction?.type ?? null,
+      currentCategory: transaction?.category ?? null,
+      newType: updates?.type ?? transaction?.type ?? null,
+      newCategory: updates?.category ?? transaction?.category ?? null,
+      newReviewed: updates?.reviewed === true,
+      applyToPending: toBooleanFlag(rule.apply_to_pending),
+      applyReviewed: toBooleanFlag(rule.apply_reviewed),
+      willApply: !skipped,
+      skipReason: pendingBlocked ? 'pending' : (reviewedBlocked ? 'reviewed' : null),
+      confidenceMode: rule.confidence_mode || 'suggest',
+      accountId: transaction?.account_id || transaction?.plaid_account_id || null,
+      merchantName: transaction?.merchant_name || transaction?.name || '',
+      date: transaction?.date || null,
+    });
+
+    if (!skipped && updates) updatedCount += 1;
+  }
+
+  return {
+    matchedCount,
+    updatedCount,
+    skippedPendingCount,
+    skippedReviewedCount,
+    skippedConflictCount: 0,
+    preview: rows,
+  };
+}
+
 export function applyRuleToTransaction(transaction, rule) {
   if (!transactionMatchesRule(transaction, rule)) return null;
   const updates = buildRuleUpdate(transaction, rule);
@@ -139,16 +247,7 @@ export function applyRuleToTransaction(transaction, rule) {
 }
 
 export function previewRuleMatches(rule, transactions = []) {
-  return (transactions || [])
-    .filter((transaction) => transactionMatchesRule(transaction, rule))
-    .map((transaction) => ({
-      transactionId: transaction.id,
-      transaction,
-      ruleId: rule.id,
-      ruleName: rule.name || rule.match_value,
-      updates: buildRuleUpdate(transaction, rule),
-    }))
-    .filter((row) => row.updates);
+  return evaluateRulePreview(rule, transactions).preview;
 }
 
 export function getRuleMatchValueFromTransaction(transaction) {

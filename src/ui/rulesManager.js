@@ -31,6 +31,18 @@ const FALLBACK_CATEGORY_BY_TYPE = {
   Ignore: ['Ignore'],
 };
 
+const CONFIDENCE_MODE_LABELS = {
+  suggest: 'Suggest',
+  auto_apply: 'Auto Apply',
+  ignore: 'Block Other Rules',
+};
+
+const CONFIDENCE_MODE_HELP = {
+  suggest: 'Shows a suggestion only.',
+  auto_apply: 'Applies type and category automatically.',
+  ignore: 'Prevents lower-priority rules from matching. Use Mark Ignored to set ignored=true.',
+};
+
 let ruleEditorState = null;
 
 function requestPageRerender() {
@@ -157,7 +169,11 @@ function getRuleEditorAccountOptions(accounts = []) {
   return Array.from(unique.values());
 }
 
-export function renderRuleEditorModalHtml(accounts = []) {
+export function getConfidenceModeLabel(mode) {
+  return CONFIDENCE_MODE_LABELS[String(mode || 'suggest')] || String(mode || 'Suggest');
+}
+
+export function renderRuleEditorModalHtml(accounts = [], options = {}) {
   if (!ruleEditorState || !ruleEditorState.draft) return '';
 
   const draft = ruleEditorState.draft;
@@ -170,6 +186,8 @@ export function renderRuleEditorModalHtml(accounts = []) {
   const description = draft.sourceTransactionLabel
     ? 'Create a reusable rule from this transaction pattern.'
     : 'Manage how future transactions should be classified.';
+  const confidenceModeLabel = getConfidenceModeLabel(draft.confidence_mode);
+  const confidenceHelp = CONFIDENCE_MODE_HELP[draft.confidence_mode] || CONFIDENCE_MODE_HELP.suggest;
 
   return (
     '<div class="modal-backdrop" data-action="close-rule-editor"></div>' +
@@ -184,7 +202,7 @@ export function renderRuleEditorModalHtml(accounts = []) {
     '<div class="form-grid">' +
     '<label class="form-field"><span>Rule Name</span><input type="text" id="rule-name" value="' + escapeHtml(draft.name) + '" placeholder="Amazon purchases"></label>' +
     '<label class="form-field"><span>Confidence</span><select id="rule-confidence-mode">' +
-    ['suggest', 'auto_apply', 'ignore'].map((mode) => '<option value="' + mode + '"' + (draft.confidence_mode === mode ? ' selected' : '') + '>' + (mode === 'auto_apply' ? 'Auto apply' : mode.charAt(0).toUpperCase() + mode.slice(1)) + '</option>').join('') +
+    ['suggest', 'auto_apply', 'ignore'].map((mode) => '<option value="' + mode + '"' + (draft.confidence_mode === mode ? ' selected' : '') + '>' + escapeHtml(CONFIDENCE_MODE_LABELS[mode] || mode) + '</option>').join('') +
     '</select></label>' +
     '<label class="form-field"><span>Priority</span><input type="number" step="1" id="rule-priority" value="' + escapeHtml(String(draft.priority)) + '" placeholder="100"></label>' +
     '<label class="form-field"><span>Match Type</span><select id="rule-match-type">' +
@@ -208,12 +226,47 @@ export function renderRuleEditorModalHtml(accounts = []) {
     '<label class="form-field field-checkbox"><input type="checkbox" id="rule-apply-pending"' + (draft.apply_to_pending ? ' checked' : '') + '> <span>Auto-apply to pending transactions</span></label>' +
     '<label class="form-field field-checkbox"><input type="checkbox" id="rule-set-ignored"' + (draft.set_ignored ? ' checked' : '') + '> <span>Mark matching transactions as ignored</span></label>' +
     '</div>' +
+    '<p class="card-description" style="margin-top: 0;">' + escapeHtml(confidenceModeLabel) + ': ' + escapeHtml(confidenceHelp) + '</p>' +
     '<div id="rule-editor-error" class="settings-message error">' + escapeHtml(ruleEditorState.error || '') + '</div>' +
     '<div class="filter-actions">' +
     '<button class="button button-secondary" data-action="close-rule-editor">Close</button>' +
-    (draft.mode === 'edit' && draft.id ? '<button class="button button-secondary" data-action="rules-preview-one" data-id="' + escapeHtml(draft.id) + '">Preview matches</button>' : '') +
+    (options.showDraftPreviewButton === false ? '' : '<button class="button button-secondary" data-action="preview-rule-draft">Preview matches</button>') +
     '<button class="button button-primary" data-action="save-rule-editor">' + (draft.mode === 'edit' ? 'Save Rule' : 'Create Rule') + '</button>' +
     '</div>' +
+    '</section>'
+  );
+}
+
+export function renderRulePreviewTableHtml(result, options = {}) {
+  const rows = Array.isArray(result?.preview) ? result.preview : Array.isArray(result) ? result : [];
+  const matchedCount = Number(result?.matchedCount ?? rows.length ?? 0);
+  const updatedCount = Number(result?.updatedCount ?? rows.filter((row) => row?.willApply !== false).length ?? 0);
+  const skippedPendingCount = Number(result?.skippedPendingCount ?? rows.filter((row) => row?.skipReason === 'pending').length ?? 0);
+  const skippedReviewedCount = Number(result?.skippedReviewedCount ?? rows.filter((row) => row?.skipReason === 'reviewed').length ?? 0);
+  const title = options.title || 'Rule Preview';
+
+  const rowsHtml = rows.length
+    ? rows.map((row) => (
+      '<tr>' +
+      '<td>' + escapeHtml(row.date || '-') + '</td>' +
+      '<td>' + escapeHtml(row.merchantName || row.name || '-') + '</td>' +
+      '<td>' + escapeHtml(row.accountId || '-') + '</td>' +
+      '<td>' + escapeHtml(row.currentType || '-') + '</td>' +
+      '<td>' + escapeHtml(row.currentCategory || '-') + '</td>' +
+      '<td>' + escapeHtml(row.newType || '-') + '</td>' +
+      '<td>' + escapeHtml(row.newCategory || '-') + '</td>' +
+      '<td><span class="' + (row.pending ? 'status-needs-review' : 'status-reviewed') + '">' + escapeHtml(row.pending ? 'Pending' : 'Posted') + '</span></td>' +
+      '<td>' + escapeHtml(row.reviewed ? 'Reviewed' : 'Needs Review') + '</td>' +
+      '</tr>'
+    )).join('')
+    : '<tr><td colspan="9"><div class="empty-state">No matches found.</div></td></tr>';
+
+  return (
+    '<div class="modal-backdrop" data-action="close-rule-preview"></div>' +
+    '<section class="review-modal rule-preview-modal" role="dialog" aria-modal="true" aria-label="' + escapeHtml(title) + '">' +
+    '<div class="card-header"><h3 class="card-title">' + escapeHtml(title) + '</h3><p class="card-description">' + escapeHtml(matchedCount + ' matched, ' + updatedCount + ' would update' + (skippedPendingCount || skippedReviewedCount ? ', ' + skippedPendingCount + ' pending skipped, ' + skippedReviewedCount + ' reviewed skipped' : '')) + '</p></div>' +
+    '<div class="table-wrap"><table class="table table-compact"><thead><tr><th>Date</th><th>Merchant</th><th>Account</th><th>Current Type</th><th>Current Category</th><th>New Type</th><th>New Category</th><th>Pending</th><th>Reviewed</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>' +
+    '<div class="filter-actions"><button class="button button-secondary" data-action="close-rule-preview">Close</button></div>' +
     '</section>'
   );
 }
