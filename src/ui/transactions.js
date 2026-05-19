@@ -10,6 +10,8 @@ import { getSetting } from '../api/settingsApi.js';
 import { getActivePeriod } from '../app/appState.js';
 import { getPeriodLabel } from '../utils/formatters.js';
 import {
+  TRANSACTION_TYPES,
+  getCategoryOptionsForType,
   getRuleEditorState,
   openRuleEditor,
   closeRuleEditor,
@@ -17,10 +19,10 @@ import {
   setRuleEditorError,
   updateRuleEditorDraftField,
 } from './rulesManager.js';
-import { normalizeReviewDraft, renderReviewModalHtml } from './transactionReviewModal.js';
+import { normalizeReviewDraft } from './transactionReviewModal.js';
 import { emitAppEvent } from '../app/events.js';
 import { timeAsync, logRenderTime } from '../utils/performance.js';
-import { getAccounts } from '../api/plaidApi.js';
+import { getAccounts, getPlaidStatus } from '../api/plaidApi.js';
 import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
 
 const TRANSACTION_TYPES_FOR_FILTER = ['Income', 'Expense', 'Bills', 'Wants', 'Transfer', 'Debt Payment', 'Ignore'];
@@ -57,6 +59,7 @@ let _reviewDraft = null;
 let _txMessage = '';
 let _txMessageType = 'success';
 let _pendingReviewTxId = null;
+let _selectedTransactionIds = new Set();
 let _loadError = null;
 let _searchDebounceTimer = null;
 let _legacyCompatibilityMode = false;
@@ -69,6 +72,9 @@ let _expandedSplitParentIds = new Set();
 let _splitValidationMessage = '';
 let _expenseCategoryOptions = [];
 let _txCcSettings = null;
+let _txPlaidStatus = null;
+let _pendingHiddenBySettings = false;
+let _filtersModalOpen = false;
 const ACCOUNT_TAB_LABELS_SETTING_KEY = 'account_tab_labels';
 
 export function setPendingReviewTransactionId(id) {
@@ -95,6 +101,60 @@ function _getReviewModalTransaction() {
   const pageRow = _rows.find((row) => row.id === _reviewModalTxId);
   if (pageRow) return pageRow;
   return _reviewModalRow?.id === _reviewModalTxId ? _reviewModalRow : null;
+}
+
+function unwrapTransactionRows(response) {
+  if (Array.isArray(response)) return response;
+  if (Array.isArray(response?.rows)) return response.rows;
+  return [];
+}
+
+function isNeedsReview(row) {
+  if (!row) return false;
+  if (!row.reviewed) return true;
+  if (!String(row.type || '').trim()) return true;
+  if (!String(row.category || '').trim()) return true;
+  return false;
+}
+
+function hasSplit(row) {
+  return Array.isArray(row?.split_lines) && row.split_lines.length > 0;
+}
+
+function getMerchantName(row) {
+  return String(row?.merchant_name || row?.name || 'Transaction').trim();
+}
+
+function getRawDescription(row) {
+  const raw = String(row?.name || '').trim();
+  const merchant = String(row?.merchant_name || '').trim();
+  return raw && raw !== merchant ? raw : '';
+}
+
+function getStatusPills(row) {
+  const pills = [];
+  pills.push(isNeedsReview(row) ? { label: 'Needs Review', className: 'badge-warning' } : { label: 'Reviewed', className: 'badge-good' });
+  pills.push(row?.pending ? { label: 'Pending', className: 'badge-warning' } : { label: 'Posted', className: 'badge-neutral' });
+  if (hasSplit(row)) pills.push({ label: 'Split', className: 'badge-neutral' });
+  if (row?.possibleBillMatch || row?.billMatch || row?.matchStatus === 'Possible match') pills.push({ label: 'Possible Bill Match', className: 'badge-warning' });
+  if (row?.transferMatch || row?.possibleTransferMatch) pills.push({ label: 'Transfer Match', className: 'badge-neutral' });
+  return pills;
+}
+
+function renderStatusPills(row) {
+  return getStatusPills(row)
+    .map((pill) => '<span class="' + pill.className + '">' + escapeHtml(pill.label) + '</span>')
+    .join(' ');
+}
+
+function getLastSyncLabel(status) {
+  const timestamps = (Array.isArray(status?.items) ? status.items : [])
+    .map((item) => item?.lastSyncedAt)
+    .filter(Boolean)
+    .map((value) => new Date(value).getTime())
+    .filter(Number.isFinite);
+  if (!timestamps.length) return 'Last sync unavailable';
+  return 'Last sync ' + new Date(Math.max(...timestamps)).toLocaleString();
 }
 
 async function _openPendingReviewTransaction() {
@@ -126,10 +186,14 @@ async function _openPendingReviewTransaction() {
 
 export async function renderTransactions(container) {
   _renderFrame(container);
-  const body = document.getElementById('page-body');
+  let body = document.getElementById('page-body');
   if (!body) return;
 
-  body.innerHTML = '<section class="card"><p class="empty-state">Loading transactions...</p></section>';
+  body.innerHTML =
+    '<section class="card transactions-loading-card">' +
+    '<div class="skeleton-line skeleton-line-lg"></div>' +
+    '<div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div>' +
+    '</section>';
   _attachDelegation(body);
 
   const masterLists = await getMasterLists(false);
@@ -137,6 +201,19 @@ export async function renderTransactions(container) {
     ? masterLists.expenseList.map((row) => String(row?.name || '').trim()).filter(Boolean)
     : [];
   _txCcSettings = await loadCommandCenterSettings().catch(() => null);
+  _txPlaidStatus = await getPlaidStatus().catch(() => null);
+  const safeMoneySettings = await getSetting('safe_money_settings').catch(() => ({}));
+  _pendingHiddenBySettings = safeMoneySettings?.includePendingTransactions === false || safeMoneySettings?.include_pending_transactions === false;
+  if (_pendingHiddenBySettings && _filters.pending === '') _filters.pending = 'false';
+  _renderFrame(container);
+  body = document.getElementById('page-body');
+  if (!body) return;
+  body.innerHTML =
+    '<section class="card transactions-loading-card">' +
+    '<div class="skeleton-line skeleton-line-lg"></div>' +
+    '<div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div>' +
+    '</section>';
+  _attachDelegation(body);
   await _loadAccountTabs();
   const period = getActivePeriod();
 
@@ -157,10 +234,13 @@ export async function renderTransactions(container) {
 
 function _renderFrame(container) {
   const period = getActivePeriod();
+  const syncConnected = !!_txPlaidStatus?.connected;
   container.innerHTML =
     '<header class="page-header">' +
-    '<div class="page-header-main"><h2 class="page-title">Transactions</h2><p class="page-description">An inbox for new spending, bills, transfers, and income.</p></div>' +
-    '<div class="page-header-right"><span class="status-badge">' + escapeHtml(getPeriodLabel(period)) + '</span></div>' +
+    '<div class="page-header-main"><h2 class="page-title">Transactions Inbox</h2><p class="page-description">Review, categorize, split, and clear transactions for this pay period.</p></div>' +
+    '<div class="page-header-right dashboard-banner-meta"><span class="status-badge">' + escapeHtml(getPeriodLabel(period)) + '</span>' +
+    '<span class="badge-neutral">' + escapeHtml(getLastSyncLabel(_txPlaidStatus)) + '</span>' +
+    '<span class="' + (syncConnected ? 'badge-good' : 'badge-warning') + '">' + escapeHtml(syncConnected ? 'Connected' : 'Not connected') + '</span></div>' +
     '</header><div id="page-body" class="page-body"></div>';
 }
 
@@ -204,7 +284,7 @@ async function _fetchAndStore(period, offset) {
     const boundedOffset = Math.max(0, Math.min(offset, maxOffset));
     const pageRows = filteredRows.slice(boundedOffset, boundedOffset + _limit);
 
-    _rows = pageRows;
+    _rows = unwrapTransactionRows(pageRows);
     _pagination = {
       limit: _limit,
       offset: boundedOffset,
@@ -216,9 +296,16 @@ async function _fetchAndStore(period, offset) {
     };
   } else {
     _legacyCompatibilityMode = false;
-    _rows = Array.isArray(result?.rows) ? result.rows : [];
+    if (!result || !Array.isArray(result.rows)) {
+      _rows = [];
+      _pagination = { ..._pagination, total: 0, offset: 0, hasNext: false, hasPrevious: false, nextOffset: null, previousOffset: null };
+      _loadError = new Error('Transactions response was not recognized.');
+      return;
+    }
+    _rows = unwrapTransactionRows(result);
     _pagination = result?.pagination || _pagination;
   }
+  _selectedTransactionIds = new Set(Array.from(_selectedTransactionIds).filter((id) => _rows.some((row) => row.id === id)));
 
   _loadError = null;
 }
@@ -296,9 +383,8 @@ function _paint(body, period) {
 
   if (_loadError) {
     body.innerHTML =
-      '<section class="card"><div class="error-card">' +
-      (_loadError.offline ? 'Backend not reachable through the local API proxy.' : 'Transactions could not be loaded.') +
-      '<br><small>' + escapeHtml(_loadError.message) + '</small></div></section>';
+      '<section class="card"><div class="error-card">Transactions could not load. Try syncing again.</div>' +
+      '<div class="filter-actions"><button class="button button-secondary" data-action="sync-transactions">Sync Transactions</button></div></section>';
     logRenderTime('transactions.paint.error', renderStartedAt);
     return;
   }
@@ -311,25 +397,81 @@ function _paint(body, period) {
     ? 'Account: ' + selectedAccountTab.label + '.'
     : 'Account: all accounts.';
   const reviewedCount = _rows.filter((row) => !!row.reviewed).length;
-  const needsReviewCount = _rows.filter((row) => !row.reviewed).length;
+  const needsReviewCount = _rows.filter(isNeedsReview).length;
+  const pendingCount = _rows.filter((row) => !!row.pending).length;
+  const splitCount = _rows.filter(hasSplit).length;
   const txFeat = (key) => isFeatureEnabled(_txCcSettings, 'transactions', key);
+  const selectedCount = _selectedTransactionIds.size;
+  const categoryFilterOptions = Array.from(new Set([
+    ..._expenseCategoryOptions,
+    ..._rows.map((row) => String(row.category || '').trim()).filter(Boolean),
+  ])).sort((a, b) => a.localeCompare(b));
 
   const headerHtml =
-    '<section class="card">' +
+    '<section class="transactions-inbox-page">' +
     (_legacyCompatibilityMode
       ? '<p class="settings-message error">Transactions loaded in compatibility mode. Restart backend to use pagination.</p>'
       : '') +
     (_txMessage ? '<p class="settings-message ' + (_txMessageType === 'error' ? 'error' : 'success') + '">' + escapeHtml(_txMessage) + '</p>' : '') +
-    '<div class="card-header"><h3 class="card-title">Transaction Inbox</h3><p class="card-description transaction-count">' +
-    _pagination.total + ' total transaction' + (_pagination.total !== 1 ? 's' : '') + '</p></div>' +
-    (txFeat('showReviewQueue') ?
-      '<div class="dashboard-grid transaction-stats">' +
-      '<article class="card stat-card"><p class="card-description">Total</p><h3 class="card-title">' + _pagination.total + '</h3></article>' +
-      '<article class="card stat-card"><p class="card-description">This Page</p><h3 class="card-title">' + _rows.length + '</h3></article>' +
-      '<article class="card stat-card"><p class="card-description">Needs Review</p><h3 class="card-title">' + needsReviewCount + '</h3></article>' +
-      '<article class="card stat-card"><p class="card-description">Reviewed</p><h3 class="card-title">' + reviewedCount + '</h3></article>' +
-      '</div>' : '') +
+    '<section class="dashboard-kpi-grid transaction-inbox-summary">' +
+    '<article class="card fintech-kpi fintech-kpi--' + (needsReviewCount ? 'warning' : 'good') + '"><p class="metric-label">Needs Review</p><h3>' + needsReviewCount + '</h3><p>Missing review, type, or category</p></article>' +
+    '<article class="card fintech-kpi fintech-kpi--' + (pendingCount ? 'warning' : 'good') + '"><p class="metric-label">Pending</p><h3>' + pendingCount + '</h3><p>May change when posted</p></article>' +
+    '<article class="card fintech-kpi"><p class="metric-label">Split</p><h3>' + splitCount + '</h3><p>Parent transactions with split lines</p></article>' +
+    '<article class="card fintech-kpi fintech-kpi--good"><p class="metric-label">Reviewed</p><h3>' + reviewedCount + '</h3><p>Cleared in this view</p></article>' +
+    '</section>' +
     (txFeat('showBankTabs') ? _renderAccountTabs() : '') +
+    '<section class="card transaction-filter-toolbar">' +
+    '<div><strong>Transaction filters</strong><p class="card-description">' + escapeHtml(modeLabel + ' ' + accountScopeLabel) + '</p></div>' +
+    '<div class="filter-actions">' +
+    '<button class="button button-secondary" data-action="open-transaction-filters">Filters</button>' +
+    '<button class="button button-secondary" data-action="preview-rules">Preview Rules</button>' +
+    '<button class="button button-secondary" data-action="apply-rules">Apply Rules</button>' +
+    '<button class="button button-secondary" data-action="show-all-synced">Show all synced</button>' +
+    '<button class="button button-secondary" data-action="use-budget-period">Use budget period</button>' +
+    '</div>' +
+    '</section>' +
+    (_rows.length && needsReviewCount === 0 ? '<section class="dashboard-alert success"><strong>Inbox clear</strong><div>All visible transactions are reviewed for this pay period.</div></section>' : '') +
+    (selectedCount > 0 ? _renderBulkActionBar(selectedCount) : '') +
+    _renderPaginationControls();
+
+  const hasActiveFilters = Boolean(_filters.search || _filters.accountId || _filters.startDate || _filters.exclusiveEndDate || _filters.type || _filters.category || _filters.reviewed || _filters.pending || _filters.showIgnored || _viewMode !== 'period');
+  const tableHtml = _rows.length
+    ? _renderTable()
+    : '<section class="card empty-state-card"><h3>' + (hasActiveFilters ? 'No matching transactions' : 'No transactions found') + '</h3><p class="empty-state">' + (hasActiveFilters ? 'Try clearing filters or changing the date range.' : 'Sync your bank or adjust your filters.') + '</p><div class="filter-actions">' + (hasActiveFilters ? '<button class="button button-primary" data-action="clear-transaction-filters">Clear filters</button>' : '<button class="button button-primary" data-action="sync-transactions">Sync Transactions</button>') + '</div></section>';
+  const modalTx = _getReviewModalTransaction();
+  const modalDraft = modalTx ? normalizeReviewDraft(modalTx, _reviewDraft || {}) : null;
+  const modalHtml = modalTx && modalDraft ? _renderTransactionDrawerHtml(modalTx, modalDraft) : '';
+  const splitModalTx = (txFeat('showSplitTransactionTools') && _splitModalTxId) ? _rows.find((row) => row.id === _splitModalTxId) : null;
+  const splitModalHtml = splitModalTx ? _renderSplitModalHtml(splitModalTx) : '';
+
+  const filterModalHtml = _filtersModalOpen ? _renderFiltersModalHtml({ categoryFilterOptions, txFeat }) : '';
+  body.innerHTML = headerHtml + tableHtml + _renderPaginationControls('pagination-bottom') + '</section>' + filterModalHtml + modalHtml + splitModalHtml + renderRuleEditorModalHtml(_rows);
+  logRenderTime('transactions.paint', renderStartedAt);
+}
+
+function _renderBulkActionBar(selectedCount) {
+  return (
+    '<section class="card bulk-action-bar">' +
+    '<strong>' + escapeHtml(String(selectedCount)) + ' selected</strong>' +
+    '<button class="button button-secondary button-sm" data-action="bulk-mark-reviewed">Mark Reviewed</button>' +
+    '<button class="button button-secondary button-sm" data-action="bulk-mark-needs-review">Mark Needs Review</button>' +
+    '<label class="form-field bulk-field"><span>Set Type</span><select id="bulk-type-select"><option value="">Choose</option>' +
+    TRANSACTION_TYPES.map((type) => '<option value="' + escapeHtml(type) + '">' + escapeHtml(type) + '</option>').join('') +
+    '</select></label>' +
+    '<label class="form-field bulk-field"><span>Set Category</span><select id="bulk-category-select"><option value="">Choose</option>' +
+    _expenseCategoryOptions.map((category) => '<option value="' + escapeHtml(category) + '">' + escapeHtml(category) + '</option>').join('') +
+    '</select></label>' +
+    '<button class="button button-secondary button-sm" data-action="bulk-clear-selection">Clear Selection</button>' +
+    '</section>'
+  );
+}
+
+function _renderFiltersModalHtml({ categoryFilterOptions, txFeat }) {
+  return (
+    '<div class="modal-backdrop" data-action="close-transaction-filters"></div>' +
+    '<section class="review-modal transaction-filter-modal" role="dialog" aria-modal="true" aria-label="Transaction filters">' +
+    '<div class="card-header"><h3 class="card-title">Filters</h3><p class="card-description">Pending transactions may change when the bank posts the final charge.</p></div>' +
+    (_pendingHiddenBySettings ? '<div class="dashboard-alert info">Some pending transactions are hidden by your Settings.</div>' : '') +
     '<div class="form-grid">' +
     '<label class="form-field"><span>Search</span><input type="text" id="tx-search" value="' + escapeHtml(_filters.search) + '" placeholder="Description, merchant, category..."></label>' +
     '<label class="form-field"><span>Account</span><select id="tx-account-filter">' +
@@ -342,7 +484,7 @@ function _paint(body, period) {
       TRANSACTION_TYPES_FOR_FILTER.map((type) => '<option value="' + escapeHtml(type) + '"' + (_filters.type === type ? ' selected' : '') + '>' + type + '</option>').join('') +
       '</select></label>' +
       '<label class="form-field"><span>Category</span><select id="tx-category-filter"><option value="">All</option>' +
-      _expenseCategoryOptions.map((category) => '<option value="' + escapeHtml(category) + '"' + (_filters.category === category ? ' selected' : '') + '>' + escapeHtml(category) + '</option>').join('') +
+      categoryFilterOptions.map((category) => '<option value="' + escapeHtml(category) + '"' + (_filters.category === category ? ' selected' : '') + '>' + escapeHtml(category) + '</option>').join('') +
       '</select></label>' +
       '<label class="form-field"><span>Reviewed</span><select id="tx-reviewed-filter">' +
       '<option value="">All</option>' +
@@ -358,23 +500,79 @@ function _paint(body, period) {
       : '') +
     '</div>' +
     '<div class="filter-actions">' +
-    '<span class="muted-note">' + escapeHtml(modeLabel + ' ' + accountScopeLabel) + '</span>' +
-    '<button class="button button-secondary" data-action="preview-rules">Preview Rules</button>' +
-    '<button class="button button-secondary" data-action="apply-rules">Apply Rules</button>' +
-    '<button class="button button-secondary" data-action="show-all-synced">Show all synced</button>' +
-    '<button class="button button-secondary" data-action="use-budget-period">Use budget period</button>' +
+    '<button class="button button-secondary" data-action="clear-transaction-filters">Clear filters</button>' +
+    '<button class="button button-primary" data-action="close-transaction-filters">Done</button>' +
     '</div>' +
-    _renderPaginationControls();
+    '</section>'
+  );
+}
 
-  const tableHtml = _rows.length ? _renderTable() : '<p class="empty-state">No transactions found for this view.</p>';
-  const modalTx = _getReviewModalTransaction();
-  const modalDraft = modalTx ? normalizeReviewDraft(modalTx, _reviewDraft || {}) : null;
-  const modalHtml = modalTx && modalDraft ? renderReviewModalHtml(modalTx, modalDraft) : '';
-  const splitModalTx = (txFeat('showSplitTransactionTools') && _splitModalTxId) ? _rows.find((row) => row.id === _splitModalTxId) : null;
-  const splitModalHtml = splitModalTx ? _renderSplitModalHtml(splitModalTx) : '';
+function _renderTransactionDrawerHtml(transaction, draft) {
+  const categories = getCategoryOptionsForType(draft.type);
+  const categoryOptions = categories.includes(draft.category) || !draft.category ? categories : [draft.category, ...categories];
+  const fmt = (amount) => {
+    const n = Number(amount || 0);
+    return (n < 0 ? '-' : '+') + '$' + Math.abs(n).toFixed(2);
+  };
+  const rawDescription = getRawDescription(transaction);
+  const splitTotal = Array.isArray(transaction.split_lines)
+    ? transaction.split_lines.reduce((sum, line) => sum + Math.abs(Number(line?.amount || 0)), 0)
+    : 0;
+  const originalAmount = Math.abs(Number(transaction.amount || 0));
+  const splitRemaining = originalAmount - splitTotal;
 
-  body.innerHTML = headerHtml + tableHtml + _renderPaginationControls('pagination-bottom') + '</section>' + modalHtml + splitModalHtml + renderRuleEditorModalHtml(_rows);
-  logRenderTime('transactions.paint', renderStartedAt);
+  return (
+    '<div class="transaction-drawer-backdrop" data-action="close-review-modal"></div>' +
+    '<aside class="transaction-drawer" role="dialog" aria-modal="true" aria-label="Review transaction">' +
+    '<header class="transaction-drawer-header">' +
+    '<div><p class="metric-label">Review/Edit</p><h3>' + escapeHtml(getMerchantName(transaction)) + '</h3></div>' +
+    '<button class="button button-secondary button-sm" data-action="close-review-modal">Close</button>' +
+    '</header>' +
+    '<section class="transaction-drawer-section">' +
+    '<h4>Transaction Details</h4>' +
+    '<div class="drawer-detail-grid">' +
+    '<div><span>Merchant</span><strong>' + escapeHtml(getMerchantName(transaction)) + '</strong></div>' +
+    '<div><span>Raw description</span><strong>' + escapeHtml(rawDescription || '-') + '</strong></div>' +
+    '<div><span>Date</span><strong>' + escapeHtml(transaction.date || '-') + '</strong></div>' +
+    '<div><span>Account</span><strong>' + escapeHtml((transaction.account_name || '-') + (transaction.mask ? ' (' + transaction.mask + ')' : '')) + '</strong></div>' +
+    '<div><span>Amount</span><strong>' + escapeHtml(fmt(transaction.amount)) + '</strong></div>' +
+    '<div><span>Status</span><strong>' + escapeHtml(transaction.pending ? 'Pending' : 'Posted') + '</strong></div>' +
+    '</div>' +
+    '</section>' +
+    '<section class="transaction-drawer-section">' +
+    '<h4>Classification</h4>' +
+    '<div class="form-grid">' +
+    '<label class="form-field"><span>Type</span><select id="review-type">' +
+    TRANSACTION_TYPES.map((type) => '<option value="' + escapeHtml(type) + '"' + (draft.type === type ? ' selected' : '') + '>' + escapeHtml(type) + '</option>').join('') +
+    '</select></label>' +
+    '<label class="form-field"><span>Category</span><select id="review-category">' +
+    categoryOptions.map((category) => '<option value="' + escapeHtml(category) + '"' + (draft.category === category ? ' selected' : '') + '>' + escapeHtml(category) + '</option>').join('') +
+    '</select></label>' +
+    '<label class="form-field field-checkbox"><input type="checkbox" id="review-reviewed"' + (draft.reviewed ? ' checked' : '') + '> <span>Reviewed</span></label>' +
+    '</div>' +
+    '<label class="form-field"><span>Notes</span><textarea id="review-notes" rows="3" placeholder="Optional notes">' + escapeHtml(draft.notes || '') + '</textarea></label>' +
+    '</section>' +
+    '<section class="transaction-drawer-section">' +
+    '<h4>Split Transaction</h4>' +
+    '<div class="drawer-detail-grid">' +
+    '<div><span>Original amount</span><strong>' + escapeHtml('$' + originalAmount.toFixed(2)) + '</strong></div>' +
+    '<div><span>Split total</span><strong>' + escapeHtml('$' + splitTotal.toFixed(2)) + '</strong></div>' +
+    '<div><span>Remaining</span><strong class="' + (Math.abs(splitRemaining) < 0.005 ? 'text-good' : 'text-warning') + '">' + escapeHtml('$' + Math.abs(splitRemaining).toFixed(2)) + '</strong></div>' +
+    '</div>' +
+    '<p class="card-description">Use split rows when one bank transaction needs to count toward multiple categories. Final save is blocked until split totals match.</p>' +
+    '<button class="button button-secondary" data-action="open-split-editor" data-id="' + escapeHtml(transaction.id) + '">Edit Split</button>' +
+    '</section>' +
+    '<section class="transaction-drawer-section">' +
+    '<h4>Match Hints</h4>' +
+    '<p class="empty-state">' + (transaction.possibleBillMatch || transaction.billMatch || transaction.transferMatch || transaction.possibleTransferMatch ? 'Review the available match status in the row.' : 'No supported bill or transfer match hint is available for this transaction.') + '</p>' +
+    '</section>' +
+    '<div id="review-error" class="settings-message error"></div>' +
+    '<footer class="transaction-drawer-actions">' +
+    '<button class="button button-secondary" data-action="create-rule-from-transaction" data-id="' + escapeHtml(transaction.id) + '">Create Rule</button>' +
+    '<button class="button button-primary" data-action="save-transaction-review" data-id="' + escapeHtml(transaction.id) + '">Save</button>' +
+    '</footer>' +
+    '</aside>'
+  );
 }
 
 function _renderPaginationControls(extraClass = '') {
@@ -420,7 +618,7 @@ function _renderTable() {
   };
 
   const rowsHtml = _rows.map((row) => {
-    const hasSplits = Array.isArray(row.split_lines) && row.split_lines.length > 0;
+    const hasSplits = hasSplit(row);
     const hasFinalSplits = hasSplits && !!row.split_is_final;
     const isExpanded = hasSplits && _expandedSplitParentIds.has(String(row.id || ''));
     const splitBadge = hasSplits
@@ -430,21 +628,16 @@ function _renderTable() {
       ? '<button class="button button-secondary button-sm" data-action="toggle-split-details" data-id="' + escapeHtml(row.id) + '">' + (isExpanded ? 'Hide Splits' : 'Show Splits') + '</button>'
       : '';
 
-    const statusPills = [
-      row.pending ? '<span class="badge-warning">Pending</span>' : '',
-      hasFinalSplits ? '<span class="badge-neutral">Split</span>' : '',
-      row.reviewed ? '<span class="badge-good">Reviewed</span>' : '<span class="badge-warning">Needs review</span>',
-    ].filter(Boolean).join(' ');
-
     const parentRow = (
-      '<tr>' +
+      '<tr class="transaction-row" data-action="review-transaction" data-id="' + escapeHtml(row.id) + '">' +
+      '<td><input type="checkbox" class="transaction-select-checkbox" data-action="toggle-transaction-selection" data-id="' + escapeHtml(row.id) + '"' + (_selectedTransactionIds.has(row.id) ? ' checked' : '') + ' aria-label="Select transaction"></td>' +
       '<td>' + escapeHtml(row.date || '') + '</td>' +
-      '<td><strong>' + escapeHtml(row.merchant_name || row.name || '') + '</strong>' + (splitBadge ? '<br>' + splitBadge : '') + (showRawPlaidDetails ? '<br><small>' + escapeHtml(row.name || '') + '</small>' : '') + '</td>' +
+      '<td><strong>' + escapeHtml(getMerchantName(row)) + '</strong>' + (getRawDescription(row) ? '<br><small>' + escapeHtml(getRawDescription(row)) + '</small>' : '') + (splitBadge ? '<br>' + splitBadge : '') + '</td>' +
       '<td>' + escapeHtml(row.account_name || '') + (row.mask ? ' (\u2022' + escapeHtml(row.mask) + ')' : '') + (showRawPlaidDetails ? '<br><small>' + escapeHtml(row.institution_name || '') + '</small>' : '') + '</td>' +
       '<td class="amount-cell ' + (Number(row.amount || 0) < 0 ? 'amount-expense' : 'amount-income') + '">' + escapeHtml(formatAmount(row.amount)) + '</td>' +
       '<td>' + (hasFinalSplits ? '<span class="muted-note">-</span>' : (row.type ? '<span class="type-badge">' + escapeHtml(row.type) + '</span>' : '<span class="muted-note">-</span>')) + '</td>' +
       '<td>' + (hasFinalSplits ? '<span class="muted-note">-</span>' : (row.category ? '<span class="category-badge">' + escapeHtml(row.category) + '</span>' : '<span class="muted-note">-</span>')) + '</td>' +
-      '<td class="transaction-status-cell">' + statusPills + '</td>' +
+      '<td class="transaction-status-cell">' + renderStatusPills(row) + '</td>' +
       '<td class="transaction-actions">' +
       (isFeatureEnabled(_txCcSettings, 'transactions', 'showSplitTransactionTools') ? '<button class="button button-secondary button-sm" data-action="open-split-editor" data-id="' + escapeHtml(row.id) + '">Split</button>' : '') +
       splitToggle +
@@ -466,14 +659,14 @@ function _renderTable() {
     )).join('');
 
     return parentRow +
-      '<tr class="split-detail-row"><td colspan="8">' +
+      '<tr class="split-detail-row"><td colspan="9">' +
       '<div class="split-detail-shell">' +
       '<div class="split-detail-summary">Split total: $' + escapeHtml(Number(row.split_total || 0).toFixed(2)) + ' / Parent: $' + escapeHtml(Math.abs(Number(row.amount || 0)).toFixed(2)) + '</div>' +
       '<div class="table-wrap"><table class="table table-compact"><thead><tr><th>Category</th><th>Subcategory</th><th>Note</th><th>Amount</th></tr></thead><tbody>' + splitRowsHtml + '</tbody></table></div>' +
       '</div></td></tr>';
   }).join('');
 
-  return '<div class="table-wrap transaction-table-wrap"><table class="table transaction-inbox-table"><thead><tr><th>Date</th><th>Merchant</th><th>Account</th><th>Amount</th><th>Type</th><th>Category</th><th>Status</th><th>Actions</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
+  return '<div class="table-wrap transaction-table-wrap"><table class="table transaction-inbox-table"><thead><tr><th><input type="checkbox" data-action="toggle-all-transaction-selection" aria-label="Select all transactions"' + (_rows.length && _selectedTransactionIds.size === _rows.length ? ' checked' : '') + '></th><th>Date</th><th>Merchant</th><th>Account</th><th>Amount</th><th>Type</th><th>Category</th><th>Status</th><th>Actions</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
 }
 
 function _calculateSplitTotals(parentAmount, splitLines) {
@@ -544,6 +737,46 @@ function _attachDelegation(body) {
     const action = button.dataset.action;
     const period = getActivePeriod();
 
+    if (action === 'toggle-transaction-selection') {
+      const id = String(button.dataset.id || '');
+      if (button.checked) _selectedTransactionIds.add(id);
+      else _selectedTransactionIds.delete(id);
+      _repaint();
+      return;
+    }
+    if (action === 'toggle-all-transaction-selection') {
+      if (button.checked) _selectedTransactionIds = new Set(_rows.map((row) => row.id).filter(Boolean));
+      else _selectedTransactionIds = new Set();
+      _repaint();
+      return;
+    }
+    if (action === 'bulk-clear-selection') {
+      _selectedTransactionIds = new Set();
+      _repaint();
+      return;
+    }
+    if (action === 'bulk-mark-reviewed' || action === 'bulk-mark-needs-review') {
+      await _bulkPatchSelected({ reviewed: action === 'bulk-mark-reviewed' });
+      return;
+    }
+    if (action === 'clear-transaction-filters') {
+      _filters = { search: '', accountId: '', startDate: '', exclusiveEndDate: '', type: '', category: '', reviewed: '', pending: _pendingHiddenBySettings ? 'false' : '', showIgnored: false, sort: _filters.sort || 'date_desc' };
+      _viewMode = 'period';
+      _selectedTransactionIds = new Set();
+      await _fetchAndRender(period, 0);
+      return;
+    }
+    if (action === 'open-transaction-filters') {
+      _filtersModalOpen = true;
+      _repaint();
+      return;
+    }
+    if (action === 'close-transaction-filters') {
+      if (button.className && button.className.includes('modal-backdrop') && event.target !== button) return;
+      _filtersModalOpen = false;
+      _repaint();
+      return;
+    }
     if (action === 'show-all-synced') {
       _viewMode = 'all';
       await _fetchAndRender(period, 0);
@@ -748,6 +981,14 @@ function _attachDelegation(body) {
 
     const id = event.target?.id;
     const period = getActivePeriod();
+    if (id === 'bulk-type-select' && event.target.value) {
+      await _bulkPatchSelected({ type: event.target.value, category: event.target.value === 'Ignore' ? 'Ignore' : undefined, ignored: event.target.value === 'Ignore' });
+      return;
+    }
+    if (id === 'bulk-category-select' && event.target.value) {
+      await _bulkPatchSelected({ category: event.target.value });
+      return;
+    }
     if (id === 'tx-page-size') {
       _limit = Number.parseInt(event.target.value, 10) || 100;
       await _fetchAndRender(period, 0);
@@ -755,41 +996,49 @@ function _attachDelegation(body) {
     }
     if (id === 'tx-account-filter') {
       _filters.accountId = event.target.value;
+      _filtersModalOpen = true;
       await _fetchAndRender(period, 0);
       return;
     }
     if (id === 'tx-start-date') {
       _filters.startDate = event.target.value;
+      _filtersModalOpen = true;
       await _fetchAndRender(period, 0);
       return;
     }
     if (id === 'tx-end-date') {
       _filters.exclusiveEndDate = event.target.value;
+      _filtersModalOpen = true;
       await _fetchAndRender(period, 0);
       return;
     }
     if (id === 'tx-type-filter') {
       _filters.type = event.target.value;
+      _filtersModalOpen = true;
       await _fetchAndRender(period, 0);
       return;
     }
     if (id === 'tx-category-filter') {
       _filters.category = event.target.value;
+      _filtersModalOpen = true;
       await _fetchAndRender(period, 0);
       return;
     }
     if (id === 'tx-reviewed-filter') {
       _filters.reviewed = event.target.value;
+      _filtersModalOpen = true;
       await _fetchAndRender(period, 0);
       return;
     }
     if (id === 'tx-pending-filter') {
-      _filters.pending = event.target.value;
+      _filters.pending = _pendingHiddenBySettings && event.target.value === '' ? 'false' : event.target.value;
+      _filtersModalOpen = true;
       await _fetchAndRender(period, 0);
       return;
     }
     if (id === 'tx-show-ignored') {
       _filters.showIgnored = !!event.target.checked;
+      _filtersModalOpen = true;
       await _fetchAndRender(period, 0);
       return;
     }
@@ -832,6 +1081,7 @@ function _attachDelegation(body) {
     _filters.search = event.target.value;
     if (_searchDebounceTimer) clearTimeout(_searchDebounceTimer);
     _searchDebounceTimer = setTimeout(() => {
+      _filtersModalOpen = true;
       _fetchAndRender(getActivePeriod(), 0);
     }, SEARCH_DEBOUNCE_MS);
   });
@@ -931,6 +1181,33 @@ async function _saveSplitLines(id, isFinal, button) {
   } finally {
     button.disabled = false;
   }
+}
+
+async function _bulkPatchSelected(updates) {
+  const ids = Array.from(_selectedTransactionIds).filter(Boolean);
+  if (!ids.length) return;
+
+  let successCount = 0;
+  let failureCount = 0;
+  for (const id of ids) {
+    const payload = Object.fromEntries(Object.entries(updates).filter(([, value]) => value !== undefined));
+    try {
+      const updatedRow = await patchTransaction(id, payload);
+      const index = _rows.findIndex((row) => row.id === id);
+      if (index !== -1) _rows[index] = { ..._rows[index], ...updatedRow };
+      successCount += 1;
+    } catch (_err) {
+      failureCount += 1;
+    }
+  }
+
+  _selectedTransactionIds = new Set();
+  _txMessage = failureCount
+    ? successCount + ' transaction(s) updated. ' + failureCount + ' could not be updated.'
+    : successCount + ' transaction(s) updated.';
+  _txMessageType = failureCount ? 'error' : 'success';
+  emitAppEvent('budget:transactions-updated');
+  _repaint();
 }
 
 async function _loadAccountTabs() {

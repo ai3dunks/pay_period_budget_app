@@ -1759,8 +1759,8 @@ body {
   color: var(--text);
 }
 
-.transaction-inbox-table th:nth-child(4),
-.transaction-inbox-table td:nth-child(4) {
+.transaction-inbox-table th:nth-child(5),
+.transaction-inbox-table td:nth-child(5) {
   text-align: right;
 }
 
@@ -1769,6 +1769,175 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
+}
+
+.transactions-inbox-page {
+  display: grid;
+  gap: 14px;
+}
+
+.transaction-inbox-summary .fintech-kpi {
+  min-height: 112px;
+}
+
+.transaction-filter-card {
+  padding: 14px;
+}
+
+.transaction-filter-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+}
+
+.transaction-filter-toolbar .card-description {
+  margin-top: 3px;
+}
+
+.transaction-filter-modal {
+  width: min(720px, calc(100vw - 24px));
+}
+
+.bulk-action-bar {
+  position: sticky;
+  top: 10px;
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+  border-color: rgba(15, 118, 110, 0.24);
+  background: var(--soft-success);
+}
+
+.bulk-field {
+  min-width: 150px;
+  margin: 0;
+}
+
+.transaction-row {
+  cursor: pointer;
+}
+
+.transaction-select-checkbox {
+  cursor: pointer;
+}
+
+.transaction-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(17, 24, 39, 0.28);
+}
+
+.transaction-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  width: min(520px, 100vw);
+  height: 100vh;
+  overflow-y: auto;
+  border-left: 1px solid var(--line);
+  background: #FFFFFF;
+  box-shadow: -24px 0 48px rgba(17, 24, 39, 0.18);
+}
+
+.transaction-drawer-header,
+.transaction-drawer-section,
+.transaction-drawer-actions {
+  padding: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.transaction-drawer-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  background: #FFFFFF;
+}
+
+.transaction-drawer-header h3,
+.transaction-drawer-section h4 {
+  margin: 0;
+}
+
+.transaction-drawer-section {
+  display: grid;
+  gap: 12px;
+}
+
+.drawer-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.drawer-detail-grid div {
+  display: grid;
+  gap: 3px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #F9FAFB;
+}
+
+.drawer-detail-grid span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.transaction-drawer-actions {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: auto;
+  background: #FFFFFF;
+}
+
+.transactions-loading-card {
+  display: grid;
+  gap: 12px;
+}
+
+.skeleton-line,
+.skeleton-row {
+  overflow: hidden;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #F3F4F6, #E5E7EB, #F3F4F6);
+  background-size: 200% 100%;
+  animation: skeleton-pulse 1.3s ease-in-out infinite;
+}
+
+.skeleton-line {
+  width: 240px;
+  height: 24px;
+}
+
+.skeleton-line-lg {
+  width: 320px;
+}
+
+.skeleton-row {
+  height: 42px;
+}
+
+@keyframes skeleton-pulse {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
 }
 
 .bill-check-action {
@@ -3435,14 +3604,23 @@ body {
     text-transform: uppercase;
   }
 
-  .transaction-inbox-table td:nth-child(1)::before { content: "Date"; }
-  .transaction-inbox-table td:nth-child(2)::before { content: "Merchant"; }
-  .transaction-inbox-table td:nth-child(3)::before { content: "Account"; }
-  .transaction-inbox-table td:nth-child(4)::before { content: "Amount"; }
-  .transaction-inbox-table td:nth-child(5)::before { content: "Type"; }
-  .transaction-inbox-table td:nth-child(6)::before { content: "Category"; }
-  .transaction-inbox-table td:nth-child(7)::before { content: "Status"; }
-  .transaction-inbox-table td:nth-child(8)::before { content: "Actions"; }
+  .transaction-inbox-table td:nth-child(1)::before { content: "Select"; }
+  .transaction-inbox-table td:nth-child(2)::before { content: "Date"; }
+  .transaction-inbox-table td:nth-child(3)::before { content: "Merchant"; }
+  .transaction-inbox-table td:nth-child(4)::before { content: "Account"; }
+  .transaction-inbox-table td:nth-child(5)::before { content: "Amount"; }
+  .transaction-inbox-table td:nth-child(6)::before { content: "Type"; }
+  .transaction-inbox-table td:nth-child(7)::before { content: "Category"; }
+  .transaction-inbox-table td:nth-child(8)::before { content: "Status"; }
+  .transaction-inbox-table td:nth-child(9)::before { content: "Actions"; }
+
+  .transaction-drawer {
+    width: 100vw;
+  }
+
+  .drawer-detail-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ─── History page ───────────────────────────────────────────────────────── */
