@@ -9,6 +9,7 @@
 
 import { escapeHtml } from '../utils/dom.js';
 import { getMasterListsCache } from '../api/masterListsApi.js';
+import { getRuleMatchValueFromTransaction } from '../utils/transactionRules.js';
 
 export const TRANSACTION_TYPES = [
   'Income',
@@ -72,6 +73,7 @@ export function normalizeRuleDraft(draft = {}) {
     sourceTransactionLabel: draft.sourceTransactionLabel || '',
     name: String(draft.name || draft.match_value || '').trim(),
     enabled: draft.enabled === undefined ? true : !!draft.enabled,
+    priority: draft.priority ?? 100,
     match_type: String(draft.match_type || 'contains').trim(),
     match_value: String(draft.match_value || '').trim(),
     account_id: String(draft.account_id || '').trim(),
@@ -79,6 +81,12 @@ export function normalizeRuleDraft(draft = {}) {
     amount_max: draft.amount_max ?? '',
     set_type: String(draft.set_type || 'Expense').trim(),
     set_category: String(draft.set_category || '').trim(),
+    apply_type: String(draft.apply_type || draft.set_type || 'Expense').trim(),
+    apply_category: String(draft.apply_category || draft.set_category || '').trim(),
+    apply_reviewed: draft.apply_reviewed === undefined ? false : !!draft.apply_reviewed,
+    confidence_mode: String(draft.confidence_mode || 'suggest').trim(),
+    apply_to_pending: draft.apply_to_pending === undefined ? false : !!draft.apply_to_pending,
+    created_from_transaction_id: String(draft.created_from_transaction_id || draft.sourceTransactionId || '').trim(),
     set_ignored: !!draft.set_ignored,
     apply_to_unreviewed_only: draft.apply_to_unreviewed_only === undefined ? true : !!draft.apply_to_unreviewed_only,
   };
@@ -109,13 +117,17 @@ export function openRuleEditor(options = {}, currentReviewDraft = null) {
   if (transaction) {
     seed.sourceTransactionId = transaction.id;
     seed.sourceTransactionLabel = transaction.merchant_name || transaction.name || '';
-    seed.name = seed.name || transaction.merchant_name || transaction.name || '';
-    seed.match_value = seed.match_value || transaction.merchant_name || transaction.name || '';
+    const cleanMatch = getRuleMatchValueFromTransaction(transaction);
+    seed.name = seed.name || cleanMatch || transaction.merchant_name || transaction.name || '';
+    seed.match_value = seed.match_value || cleanMatch || transaction.merchant_name || transaction.name || '';
     seed.match_type = seed.match_type || (transaction.merchant_name ? 'merchant_contains' : 'contains');
     seed.account_id = seed.account_id || transaction.account_id || '';
+    seed.created_from_transaction_id = seed.created_from_transaction_id || transaction.id || '';
     if (!options.rule && currentReviewDraft) {
       seed.set_type = currentReviewDraft.type;
       seed.set_category = currentReviewDraft.category;
+      seed.apply_type = currentReviewDraft.type;
+      seed.apply_category = currentReviewDraft.category;
       seed.set_ignored = !!currentReviewDraft.ignored;
     }
   }
@@ -171,8 +183,12 @@ export function renderRuleEditorModalHtml(accounts = []) {
       : '') +
     '<div class="form-grid">' +
     '<label class="form-field"><span>Rule Name</span><input type="text" id="rule-name" value="' + escapeHtml(draft.name) + '" placeholder="Amazon purchases"></label>' +
+    '<label class="form-field"><span>Confidence</span><select id="rule-confidence-mode">' +
+    ['suggest', 'auto_apply', 'ignore'].map((mode) => '<option value="' + mode + '"' + (draft.confidence_mode === mode ? ' selected' : '') + '>' + (mode === 'auto_apply' ? 'Auto apply' : mode.charAt(0).toUpperCase() + mode.slice(1)) + '</option>').join('') +
+    '</select></label>' +
+    '<label class="form-field"><span>Priority</span><input type="number" step="1" id="rule-priority" value="' + escapeHtml(String(draft.priority)) + '" placeholder="100"></label>' +
     '<label class="form-field"><span>Match Type</span><select id="rule-match-type">' +
-    ['contains', 'exact', 'starts_with', 'merchant_contains'].map((mt) => '<option value="' + mt + '"' + (draft.match_type === mt ? ' selected' : '') + '>' + mt + '</option>').join('') +
+    ['merchant_contains', 'merchant_equals', 'description_contains', 'contains', 'exact', 'starts_with'].map((mt) => '<option value="' + mt + '"' + (draft.match_type === mt ? ' selected' : '') + '>' + mt.replaceAll('_', ' ') + '</option>').join('') +
     '</select></label>' +
     '<label class="form-field"><span>Match Value</span><input type="text" id="rule-match-value" value="' + escapeHtml(draft.match_value) + '" placeholder="merchant or description text"></label>' +
     '<label class="form-field"><span>Account</span><select id="rule-account-id"><option value="">All accounts</option>' +
@@ -188,11 +204,14 @@ export function renderRuleEditorModalHtml(accounts = []) {
     '</select></label>' +
     '<label class="form-field field-checkbox"><input type="checkbox" id="rule-enabled"' + (draft.enabled ? ' checked' : '') + '> <span>Enabled</span></label>' +
     '<label class="form-field field-checkbox"><input type="checkbox" id="rule-unreviewed-only"' + (draft.apply_to_unreviewed_only ? ' checked' : '') + '> <span>Only apply to unreviewed transactions</span></label>' +
+    '<label class="form-field field-checkbox"><input type="checkbox" id="rule-apply-reviewed"' + (draft.apply_reviewed ? ' checked' : '') + '> <span>Mark matched transactions reviewed</span></label>' +
+    '<label class="form-field field-checkbox"><input type="checkbox" id="rule-apply-pending"' + (draft.apply_to_pending ? ' checked' : '') + '> <span>Auto-apply to pending transactions</span></label>' +
     '<label class="form-field field-checkbox"><input type="checkbox" id="rule-set-ignored"' + (draft.set_ignored ? ' checked' : '') + '> <span>Mark matching transactions as ignored</span></label>' +
     '</div>' +
     '<div id="rule-editor-error" class="settings-message error">' + escapeHtml(ruleEditorState.error || '') + '</div>' +
     '<div class="filter-actions">' +
     '<button class="button button-secondary" data-action="close-rule-editor">Close</button>' +
+    (draft.mode === 'edit' && draft.id ? '<button class="button button-secondary" data-action="rules-preview-one" data-id="' + escapeHtml(draft.id) + '">Preview matches</button>' : '') +
     '<button class="button button-primary" data-action="save-rule-editor">' + (draft.mode === 'edit' ? 'Save Rule' : 'Create Rule') + '</button>' +
     '</div>' +
     '</section>'

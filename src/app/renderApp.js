@@ -8,7 +8,7 @@ import { emitAppEvent } from './events.js';
 import { getPeriodLabel } from '../utils/formatters.js';
 
 // Page modules
-import { renderSettings, handleConnectPlaid, handleSyncTransactions, handleRemovePlaidItem, handleRemovePlaidAccount, handleRestorePlaidAccount, handleCleanupRemovedPlaid, handleRulesAdd, handleRulesEdit, handleRulesToggleEnabled, handleSaveRuleEditor, handleRuleEditorChange, handleRuleEditorInput } from '../ui/settings.js';
+import { renderSettings, handleConnectPlaid, handleSyncTransactions, handleRemovePlaidItem, handleRemovePlaidAccount, handleRestorePlaidAccount, handleCleanupRemovedPlaid, handleRulesAdd, handleRulesEdit, handleRulesToggleEnabled, handleRulePreview, handleRuleApply, handleRuleDelete, handleSaveRuleEditor, handleRuleEditorChange, handleRuleEditorInput } from '../ui/settings.js';
 import { renderMasterLists } from '../ui/masterLists.js';
 import { renderTransactions, setPendingReviewTransactionId } from '../ui/transactions.js';
 import { renderExpenses } from '../ui/expenses.js';
@@ -279,6 +279,9 @@ function _attachGlobalListeners() {
     // Rules manager (settings source — transactions.js handles these for its own page)
     if (action === 'rules-add') { await handleRulesAdd(); return; }
     if (action === 'rules-edit') { await handleRulesEdit(btn); return; }
+    if (action === 'rules-preview-one') { await handleRulePreview(btn); return; }
+    if (action === 'rules-apply-one') { await handleRuleApply(btn); return; }
+    if (action === 'rules-delete') { await handleRuleDelete(btn); return; }
     if (action === 'rules-toggle-enabled') { await handleRulesToggleEnabled(btn); return; }
     if (action === 'close-rule-editor') { closeRuleEditor(); return; }
     if (action === 'save-rule-editor') {

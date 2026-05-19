@@ -16,6 +16,20 @@ export function disableRule(id) {
   return apiDelete('/api/rules/' + encodeURIComponent(id));
 }
 
+export function deleteRule(id) {
+  return apiDelete('/api/rules/' + encodeURIComponent(id));
+}
+
+export function previewRule(id, periodId) {
+  return apiPost('/api/rules/' + encodeURIComponent(id) + '/preview', {
+    periodId: periodId || undefined,
+  });
+}
+
+export function applyRule(id, options = {}) {
+  return apiPost('/api/rules/' + encodeURIComponent(id) + '/apply', options || {});
+}
+
 export function applyRules(dryRun, periodId) {
   return apiPost('/api/rules/apply', {
     dryRun,

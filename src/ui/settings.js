@@ -16,7 +16,7 @@ import {
   cleanupRemovedPlaid,
   loadPlaidScript,
 } from '../api/plaidApi.js';
-import { getRules, createRule, patchRule, applyRules } from '../api/rulesApi.js';
+import { getRules, createRule, patchRule, applyRules, previewRule, applyRule, deleteRule } from '../api/rulesApi.js';
 import { getSetting, updateSetting } from '../api/settingsApi.js';
 import {
   getRuleEditorState,
@@ -158,13 +158,16 @@ export async function renderSettings(container) {
         '<tr>' +
         '<td>' + (rule.enabled ? '<span class="status-reviewed">Enabled</span>' : '<span class="status-needs-review">Disabled</span>') + '</td>' +
         '<td>' + escapeHtml(rule.name || '-') + '</td>' +
-        '<td>' + escapeHtml(rule.match_type || 'contains') + '</td>' +
-        '<td>' + escapeHtml(rule.match_value || '') + '</td>' +
-        '<td>' + escapeHtml(rule.set_type || '-') + '</td>' +
-        '<td>' + escapeHtml(rule.set_category || '-') + '</td>' +
+        '<td>' + escapeHtml((rule.match_type || 'contains').replaceAll('_', ' ') + ' "' + (rule.match_value || '') + '"') + '</td>' +
+        '<td>' + escapeHtml((rule.set_type || rule.apply_type || '-') + ' / ' + (rule.set_category || rule.apply_category || '-')) + '</td>' +
+        '<td>' + escapeHtml(rule.confidence_mode || 'suggest') + '</td>' +
+        '<td>' + escapeHtml(rule.last_applied_at ? new Date(rule.last_applied_at).toLocaleString() : '-') + '</td>' +
         '<td class="inline-actions">' +
         '<button class="button button-secondary button-sm" data-action="rules-edit" data-id="' + escapeHtml(rule.id) + '">Edit</button>' +
+        '<button class="button button-secondary button-sm" data-action="rules-preview-one" data-id="' + escapeHtml(rule.id) + '">Preview</button>' +
+        '<button class="button button-secondary button-sm" data-action="rules-apply-one" data-id="' + escapeHtml(rule.id) + '">Apply</button>' +
         '<button class="button button-secondary button-sm" data-action="rules-toggle-enabled" data-id="' + escapeHtml(rule.id) + '" data-enabled="' + (rule.enabled ? '1' : '0') + '">' + (rule.enabled ? 'Disable' : 'Enable') + '</button>' +
+        '<button class="button button-secondary button-sm" data-action="rules-delete" data-id="' + escapeHtml(rule.id) + '">Delete</button>' +
         '</td></tr>'
       ).join('')
     : '<tr><td colspan="7">No rules yet.</td></tr>';
@@ -246,7 +249,7 @@ export async function renderSettings(container) {
       '<div class="card-header"><h3 class="card-title">Rules</h3><p class="card-description">Manage saved transaction classification rules.</p></div>' +
       (_rulesMessage ? '<p class="settings-message ' + (_rulesMessageType === 'error' ? 'error' : 'success') + '">' + escapeHtml(_rulesMessage) + '</p>' : '') +
       '<div class="settings-actions"><button class="button button-secondary" data-action="rules-add">Add Rule</button></div>' +
-      '<div class="table-wrap"><table class="table"><thead><tr><th>Status</th><th>Name</th><th>Match Type</th><th>Match Value</th><th>Type</th><th>Category</th><th>Actions</th></tr></thead>' +
+      '<div class="table-wrap"><table class="table"><thead><tr><th>Status</th><th>Rule Name</th><th>Match</th><th>Applies</th><th>Confidence</th><th>Last Used</th><th>Actions</th></tr></thead>' +
       '<tbody>' + rulesRows + '</tbody></table></div>' +
       '</section>' : '') +
 
@@ -737,6 +740,69 @@ export async function handleRulesToggleEnabled(btn) {
   }
 }
 
+export async function handleRulePreview(btn) {
+  btn.disabled = true;
+  btn.dataset.loading = 'true';
+  try {
+    const result = await previewRule(btn.dataset.id);
+    _rulesMessage = 'Preview: this rule matches ' + String(result.matchedCount || 0) + ' existing transaction(s).';
+    _rulesMessageType = 'success';
+    const content = document.getElementById('page-content');
+    if (content) await renderSettings(content);
+  } catch (err) {
+    _rulesMessage = err.message;
+    _rulesMessageType = 'error';
+    const content = document.getElementById('page-content');
+    if (content) await renderSettings(content);
+  } finally {
+    btn.disabled = false;
+    btn.dataset.loading = '';
+  }
+}
+
+export async function handleRuleApply(btn) {
+  btn.disabled = true;
+  btn.dataset.loading = 'true';
+  try {
+    const result = await applyRule(btn.dataset.id, { unreviewedOnly: true });
+    _rulesMessage = 'Rule applied to ' + String(result.updatedCount || 0) + ' current unreviewed matching transaction(s).';
+    _rulesMessageType = 'success';
+    emitAppEvent('budget:transactions-updated');
+    const content = document.getElementById('page-content');
+    if (content) await renderSettings(content);
+  } catch (err) {
+    _rulesMessage = err.message;
+    _rulesMessageType = 'error';
+    const content = document.getElementById('page-content');
+    if (content) await renderSettings(content);
+  } finally {
+    btn.disabled = false;
+    btn.dataset.loading = '';
+  }
+}
+
+export async function handleRuleDelete(btn) {
+  const confirmed = window.confirm('Delete this rule? Transactions will not be deleted.');
+  if (!confirmed) return;
+  btn.disabled = true;
+  btn.dataset.loading = 'true';
+  try {
+    await deleteRule(btn.dataset.id);
+    _rulesMessage = 'Rule deleted. Transactions were not changed.';
+    _rulesMessageType = 'success';
+    const content = document.getElementById('page-content');
+    if (content) await renderSettings(content);
+  } catch (err) {
+    _rulesMessage = err.message;
+    _rulesMessageType = 'error';
+    const content = document.getElementById('page-content');
+    if (content) await renderSettings(content);
+  } finally {
+    btn.disabled = false;
+    btn.dataset.loading = '';
+  }
+}
+
 export async function handleSaveRuleEditor() {
   const state = getRuleEditorState();
   if (!state || !state.draft) return;
@@ -755,10 +821,17 @@ export async function handleSaveRuleEditor() {
     account_id: draft.account_id || null,
     amount_min: draft.amount_min === '' ? null : draft.amount_min,
     amount_max: draft.amount_max === '' ? null : draft.amount_max,
+    priority: draft.priority,
     set_type: draft.set_ignored ? 'Ignore' : draft.set_type,
     set_category: draft.set_ignored ? 'Ignore' : draft.set_category,
+    apply_type: draft.set_ignored ? 'Ignore' : draft.set_type,
+    apply_category: draft.set_ignored ? 'Ignore' : draft.set_category,
+    apply_reviewed: draft.apply_reviewed,
+    confidence_mode: draft.confidence_mode,
+    apply_to_pending: draft.apply_to_pending,
     set_ignored: draft.set_ignored,
     apply_to_unreviewed_only: draft.apply_to_unreviewed_only,
+    created_from_transaction_id: draft.created_from_transaction_id || null,
   };
 
   try {
@@ -786,6 +859,7 @@ export function handleRuleEditorChange(e) {
   const id = e.target?.id;
   if (id === 'rule-match-type') { updateRuleEditorDraftField('match_type', e.target.value); return true; }
   if (id === 'rule-account-id') { updateRuleEditorDraftField('account_id', e.target.value); return true; }
+  if (id === 'rule-confidence-mode') { updateRuleEditorDraftField('confidence_mode', e.target.value); return true; }
   if (id === 'rule-set-type') {
     updateRuleEditorDraftField('set_type', e.target.value);
     updateRuleEditorDraftField('set_ignored', e.target.value === 'Ignore');
@@ -794,6 +868,8 @@ export function handleRuleEditorChange(e) {
   if (id === 'rule-set-category') { updateRuleEditorDraftField('set_category', e.target.value); return true; }
   if (id === 'rule-enabled') { updateRuleEditorDraftField('enabled', !!e.target.checked); return true; }
   if (id === 'rule-unreviewed-only') { updateRuleEditorDraftField('apply_to_unreviewed_only', !!e.target.checked); return true; }
+  if (id === 'rule-apply-reviewed') { updateRuleEditorDraftField('apply_reviewed', !!e.target.checked); return true; }
+  if (id === 'rule-apply-pending') { updateRuleEditorDraftField('apply_to_pending', !!e.target.checked); return true; }
   if (id === 'rule-set-ignored') {
     const nowIgnored = !!e.target.checked;
     updateRuleEditorDraftField('set_ignored', nowIgnored);
@@ -813,6 +889,7 @@ export function handleRuleEditorInput(e) {
   if (id === 'rule-match-value') { updateRuleEditorDraftField('match_value', e.target.value); return true; }
   if (id === 'rule-amount-min') { updateRuleEditorDraftField('amount_min', e.target.value); return true; }
   if (id === 'rule-amount-max') { updateRuleEditorDraftField('amount_max', e.target.value); return true; }
+  if (id === 'rule-priority') { updateRuleEditorDraftField('priority', e.target.value); return true; }
   return false;
 }
 

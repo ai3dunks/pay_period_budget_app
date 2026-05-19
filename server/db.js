@@ -432,14 +432,41 @@ function ensureTransactionRulesTable() {
       account_id TEXT,
       amount_min REAL,
       amount_max REAL,
+      priority INTEGER DEFAULT 100,
+      match_field TEXT DEFAULT 'merchant_or_description',
+      match_operator TEXT DEFAULT 'contains',
       set_type TEXT,
       set_category TEXT,
+      apply_type TEXT,
+      apply_category TEXT,
+      apply_subcategory TEXT,
+      apply_reviewed INTEGER DEFAULT 0,
+      confidence_mode TEXT DEFAULT 'suggest',
+      apply_to_pending INTEGER DEFAULT 0,
       set_ignored INTEGER DEFAULT 0,
       apply_to_unreviewed_only INTEGER DEFAULT 1,
+      created_from_transaction_id TEXT,
+      last_applied_at TEXT,
       created_at TEXT,
       updated_at TEXT
     )
   `);
+  const columns = db.prepare("PRAGMA table_info('transaction_rules')").all();
+  const columnNames = columns.map((c) => c.name);
+  const addColumn = (name, sql) => {
+    if (!columnNames.includes(name)) db.exec('ALTER TABLE transaction_rules ADD COLUMN ' + sql);
+  };
+  addColumn('priority', 'priority INTEGER DEFAULT 100');
+  addColumn('match_field', "match_field TEXT DEFAULT 'merchant_or_description'");
+  addColumn('match_operator', "match_operator TEXT DEFAULT 'contains'");
+  addColumn('apply_type', 'apply_type TEXT');
+  addColumn('apply_category', 'apply_category TEXT');
+  addColumn('apply_subcategory', 'apply_subcategory TEXT');
+  addColumn('apply_reviewed', 'apply_reviewed INTEGER DEFAULT 0');
+  addColumn('confidence_mode', "confidence_mode TEXT DEFAULT 'suggest'");
+  addColumn('apply_to_pending', 'apply_to_pending INTEGER DEFAULT 0');
+  addColumn('created_from_transaction_id', 'created_from_transaction_id TEXT');
+  addColumn('last_applied_at', 'last_applied_at TEXT');
 }
 
 ensureLegacyMasterListItemsTable();

@@ -2189,6 +2189,24 @@ body {
   gap: 12px;
 }
 
+.smart-rule-suggestion,
+.smart-rule-options {
+  padding: 10px 12px;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 13px;
+}
+
+.smart-rule-remember {
+  margin-top: 2px;
+}
+
+.smart-rule-options .form-grid {
+  margin-bottom: 8px;
+}
+
 .drawer-detail-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

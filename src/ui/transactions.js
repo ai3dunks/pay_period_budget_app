@@ -5,7 +5,7 @@
 import { escapeHtml } from '../utils/dom.js';
 import { getTransactions, getTransactionById, patchTransaction, getTransactionSplits, saveTransactionSplits } from '../api/transactionsApi.js';
 import { getMasterLists } from '../api/masterListsApi.js';
-import { applyRules } from '../api/rulesApi.js';
+import { applyRules, createRule, previewRule, applyRule, getRules } from '../api/rulesApi.js';
 import { getSetting } from '../api/settingsApi.js';
 import { getActivePeriod } from '../app/appState.js';
 import { getPeriodLabel } from '../utils/formatters.js';
@@ -24,6 +24,7 @@ import { emitAppEvent } from '../app/events.js';
 import { timeAsync, logRenderTime } from '../utils/performance.js';
 import { getAccounts, getPlaidStatus } from '../api/plaidApi.js';
 import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
+import { createRuleFromTransaction, previewRuleMatches } from '../utils/transactionRules.js';
 
 const TRANSACTION_TYPES_FOR_FILTER = ['Income', 'Expense', 'Bills', 'Wants', 'Transfer', 'Debt Payment', 'Ignore'];
 const PAGE_SIZE_OPTIONS = [50, 100, 250, 500];
@@ -75,6 +76,8 @@ let _txCcSettings = null;
 let _txPlaidStatus = null;
 let _pendingHiddenBySettings = false;
 let _filtersModalOpen = false;
+let _smartRules = [];
+let _rulePreviewMessage = '';
 const ACCOUNT_TAB_LABELS_SETTING_KEY = 'account_tab_labels';
 
 export function setPendingReviewTransactionId(id) {
@@ -136,6 +139,8 @@ function getStatusPills(row) {
   pills.push(isNeedsReview(row) ? { label: 'Needs Review', className: 'badge-warning' } : { label: 'Reviewed', className: 'badge-good' });
   pills.push(row?.pending ? { label: 'Pending', className: 'badge-warning' } : { label: 'Posted', className: 'badge-neutral' });
   if (hasSplit(row)) pills.push({ label: 'Split', className: 'badge-neutral' });
+  if (row?.ruleSuggestion) pills.push({ label: 'Suggested', className: 'badge-warning' });
+  if (row?.ruleApplied) pills.push({ label: 'Rule Applied', className: 'badge-good' });
   if (row?.possibleBillMatch || row?.billMatch || row?.matchStatus === 'Possible match') pills.push({ label: 'Possible Bill Match', className: 'badge-warning' });
   if (row?.transferMatch || row?.possibleTransferMatch) pills.push({ label: 'Transfer Match', className: 'badge-neutral' });
   return pills;
@@ -145,6 +150,34 @@ function renderStatusPills(row) {
   return getStatusPills(row)
     .map((pill) => '<span class="' + pill.className + '">' + escapeHtml(pill.label) + '</span>')
     .join(' ');
+}
+
+function _getRuleSuggestion(row) {
+  const rules = (_smartRules || [])
+    .filter((rule) => !!rule.enabled)
+    .filter((rule) => String(rule.confidence_mode || 'suggest') === 'suggest')
+    .sort((a, b) => Number(a.priority ?? 100) - Number(b.priority ?? 100));
+  for (const rule of rules) {
+    const preview = previewRuleMatches(rule, [row]);
+    if (preview.length) return { rule, preview: preview[0] };
+  }
+  return null;
+}
+
+function _decorateRowsWithRuleSuggestions(rows) {
+  return (rows || []).map((row) => {
+    const suggestion = _getRuleSuggestion(row);
+    if (!suggestion) return row;
+    return {
+      ...row,
+      ruleSuggestion: {
+        ruleId: suggestion.rule.id,
+        ruleName: suggestion.rule.name || suggestion.rule.match_value,
+        type: suggestion.preview.updates.type,
+        category: suggestion.preview.updates.category,
+      },
+    };
+  });
 }
 
 function getLastSyncLabel(status) {
@@ -202,6 +235,7 @@ export async function renderTransactions(container) {
     : [];
   _txCcSettings = await loadCommandCenterSettings().catch(() => null);
   _txPlaidStatus = await getPlaidStatus().catch(() => null);
+  _smartRules = await getRules().catch(() => []);
   const safeMoneySettings = await getSetting('safe_money_settings').catch(() => ({}));
   _pendingHiddenBySettings = safeMoneySettings?.includePendingTransactions === false || safeMoneySettings?.include_pending_transactions === false;
   if (_pendingHiddenBySettings && _filters.pending === '') _filters.pending = 'false';
@@ -216,6 +250,9 @@ export async function renderTransactions(container) {
   _attachDelegation(body);
   await _loadAccountTabs();
   const period = getActivePeriod();
+  if ((_smartRules || []).some((rule) => !!rule.enabled && String(rule.confidence_mode || 'suggest') === 'auto_apply')) {
+    await applyRules(false, period?.id).catch(() => null);
+  }
 
   try {
     await _fetchAndStore(period, 0);
@@ -284,7 +321,7 @@ async function _fetchAndStore(period, offset) {
     const boundedOffset = Math.max(0, Math.min(offset, maxOffset));
     const pageRows = filteredRows.slice(boundedOffset, boundedOffset + _limit);
 
-    _rows = unwrapTransactionRows(pageRows);
+    _rows = _decorateRowsWithRuleSuggestions(unwrapTransactionRows(pageRows));
     _pagination = {
       limit: _limit,
       offset: boundedOffset,
@@ -302,7 +339,7 @@ async function _fetchAndStore(period, offset) {
       _loadError = new Error('Transactions response was not recognized.');
       return;
     }
-    _rows = unwrapTransactionRows(result);
+    _rows = _decorateRowsWithRuleSuggestions(unwrapTransactionRows(result));
     _pagination = result?.pagination || _pagination;
   }
   _selectedTransactionIds = new Set(Array.from(_selectedTransactionIds).filter((id) => _rows.some((row) => row.id === id)));
@@ -549,6 +586,20 @@ function _renderTransactionDrawerHtml(transaction, draft) {
     categoryOptions.map((category) => '<option value="' + escapeHtml(category) + '"' + (draft.category === category ? ' selected' : '') + '>' + escapeHtml(category) + '</option>').join('') +
     '</select></label>' +
     '<label class="form-field field-checkbox"><input type="checkbox" id="review-reviewed"' + (draft.reviewed ? ' checked' : '') + '> <span>Reviewed</span></label>' +
+    '</div>' +
+    (transaction.ruleSuggestion ? '<div class="smart-rule-suggestion"><strong>Suggested by rule:</strong> ' + escapeHtml(transaction.ruleSuggestion.ruleName) + ' -> ' + escapeHtml(transaction.ruleSuggestion.type || '-') + ' / ' + escapeHtml(transaction.ruleSuggestion.category || '-') + '</div>' : '') +
+    '<label class="form-field field-checkbox smart-rule-remember"><input type="checkbox" id="review-create-rule"> <span>Remember this choice for similar transactions</span></label>' +
+    '<div id="review-smart-rule-options" class="smart-rule-options" hidden>' +
+    '<div class="form-grid">' +
+    '<label class="form-field"><span>Rule name</span><input id="review-rule-name" value="' + escapeHtml(getMerchantName(transaction)) + '"></label>' +
+    '<label class="form-field"><span>Match field</span><select id="review-rule-match-type"><option value="merchant_contains">Merchant contains</option><option value="description_contains">Raw description contains</option></select></label>' +
+    '<label class="form-field"><span>Match value</span><input id="review-rule-match-value" value="' + escapeHtml((transaction.merchant_name || getMerchantName(transaction)).trim()) + '"></label>' +
+    '<label class="form-field"><span>Confidence</span><select id="review-rule-confidence"><option value="suggest">Suggest only</option><option value="auto_apply">Auto apply type/category</option></select></label>' +
+    '</div>' +
+    '<label class="form-field field-checkbox"><input type="checkbox" id="review-rule-apply-current"> <span>Apply to current matching unreviewed transactions too</span></label>' +
+    '<label class="form-field field-checkbox"><input type="checkbox" id="review-rule-apply-reviewed"> <span>Mark matched transactions reviewed</span></label>' +
+    '<div class="filter-actions"><button class="button button-secondary button-sm" data-action="preview-review-rule">Preview matches</button></div>' +
+    '<div id="review-rule-preview" class="settings-message"></div>' +
     '</div>' +
     '<label class="form-field"><span>Notes</span><textarea id="review-notes" rows="3" placeholder="Optional notes">' + escapeHtml(draft.notes || '') + '</textarea></label>' +
     '</section>' +
@@ -869,13 +920,32 @@ function _attachDelegation(body) {
       const ignored = type === 'Ignore';
       try {
         const updatedRow = await patchTransaction(id, { type, category, notes, reviewed, ignored });
+        const shouldCreateRule = !!document.getElementById('review-create-rule')?.checked;
+        if (shouldCreateRule) {
+          const sourceRow = { ...(_rows.find((item) => item.id === id) || _reviewModalRow || {}), ...updatedRow };
+          const payload = createRuleFromTransaction(sourceRow, type, category);
+          payload.name = document.getElementById('review-rule-name')?.value || payload.name;
+          payload.match_type = document.getElementById('review-rule-match-type')?.value || payload.match_type;
+          payload.match_value = document.getElementById('review-rule-match-value')?.value || payload.match_value;
+          payload.confidence_mode = document.getElementById('review-rule-confidence')?.value || 'suggest';
+          payload.apply_reviewed = !!document.getElementById('review-rule-apply-reviewed')?.checked;
+          payload.apply_to_pending = false;
+          payload.apply_to_unreviewed_only = true;
+          const createdRule = await createRule(payload);
+          if (document.getElementById('review-rule-apply-current')?.checked && createdRule?.id) {
+            await applyRule(createdRule.id, { periodId: getActivePeriod()?.id, unreviewedOnly: true });
+          }
+          _smartRules = await getRules().catch(() => _smartRules);
+        }
         const index = _rows.findIndex((item) => item.id === id);
         if (index !== -1) _rows[index] = { ..._rows[index], ...updatedRow };
         if (_reviewModalRow?.id === id) _reviewModalRow = { ..._reviewModalRow, ...updatedRow };
         _reviewModalTxId = null;
         _reviewModalRow = null;
         _reviewDraft = null;
-        _txMessage = 'Transaction updated.';
+        _txMessage = shouldCreateRule
+          ? 'Rule created. Future matching transactions will use this category.'
+          : 'Transaction updated.';
         _txMessageType = 'success';
         emitAppEvent('budget:transactions-updated');
         _repaint();
@@ -924,6 +994,18 @@ function _attachDelegation(body) {
       openRuleEditor({ source: 'transactions', transaction: row }, _reviewDraft);
       return;
     }
+    if (action === 'preview-review-rule') {
+      const row = _getReviewModalTransaction();
+      const messageEl = document.getElementById('review-rule-preview');
+      if (!row || !messageEl) return;
+      const payload = createRuleFromTransaction(row, document.getElementById('review-type')?.value, document.getElementById('review-category')?.value);
+      payload.match_type = document.getElementById('review-rule-match-type')?.value || payload.match_type;
+      payload.match_value = document.getElementById('review-rule-match-value')?.value || payload.match_value;
+      const matches = previewRuleMatches(payload, _rows).filter((match) => !match.transaction.reviewed);
+      messageEl.className = 'settings-message success';
+      messageEl.textContent = 'This rule matches ' + String(matches.length) + ' existing unreviewed transaction(s).';
+      return;
+    }
     if (action === 'close-rule-editor') {
       closeRuleEditor();
       return;
@@ -939,11 +1021,27 @@ function _attachDelegation(body) {
       }
       return;
     }
+    if (action === 'rules-preview-one') {
+      button.disabled = true;
+      try {
+        const result = await previewRule(button.dataset.id, getActivePeriod()?.id);
+        _txMessage = 'Preview: this rule matches ' + String(result.matchedCount || 0) + ' existing transaction(s).';
+        _txMessageType = 'success';
+        _repaint();
+      } catch (err) {
+        _txMessage = err.message;
+        _txMessageType = 'error';
+        _repaint();
+      } finally {
+        button.disabled = false;
+      }
+      return;
+    }
     if (action === 'preview-rules') {
       button.disabled = true;
       try {
         const result = await applyRules(true);
-        const count = result.applied ?? result.count ?? 0;
+        const count = result.matchedCount ?? result.applied ?? result.count ?? 0;
         _txMessage = 'Preview: ' + count + ' transaction(s) would be updated.';
         _txMessageType = 'success';
         _repaint();
@@ -960,7 +1058,7 @@ function _attachDelegation(body) {
       button.disabled = true;
       try {
         const result = await applyRules(false);
-        const count = result.applied ?? result.count ?? 0;
+        const count = result.updatedCount ?? result.applied ?? result.count ?? 0;
         await _fetchAndRender(period, _pagination.offset);
         emitAppEvent('budget:transactions-updated');
         _txMessage = 'Rules applied: ' + count + ' transaction(s) updated.';
@@ -981,6 +1079,11 @@ function _attachDelegation(body) {
 
     const id = event.target?.id;
     const period = getActivePeriod();
+    if (id === 'review-create-rule') {
+      const options = document.getElementById('review-smart-rule-options');
+      if (options) options.hidden = !event.target.checked;
+      return;
+    }
     if (id === 'bulk-type-select' && event.target.value) {
       await _bulkPatchSelected({ type: event.target.value, category: event.target.value === 'Ignore' ? 'Ignore' : undefined, ignored: event.target.value === 'Ignore' });
       return;
@@ -1273,15 +1376,23 @@ async function _saveRuleEditor() {
     account_id: draft.account_id || null,
     amount_min: draft.amount_min === '' ? null : draft.amount_min,
     amount_max: draft.amount_max === '' ? null : draft.amount_max,
+    priority: draft.priority,
     set_type: draft.set_ignored ? 'Ignore' : draft.set_type,
     set_category: draft.set_ignored ? 'Ignore' : draft.set_category,
+    apply_type: draft.set_ignored ? 'Ignore' : draft.set_type,
+    apply_category: draft.set_ignored ? 'Ignore' : draft.set_category,
+    apply_reviewed: draft.apply_reviewed,
+    confidence_mode: draft.confidence_mode,
+    apply_to_pending: draft.apply_to_pending,
     set_ignored: draft.set_ignored,
     apply_to_unreviewed_only: draft.apply_to_unreviewed_only,
+    created_from_transaction_id: draft.created_from_transaction_id || null,
   };
 
   try {
     if (draft.mode === 'edit' && draft.id) await patchRule(draft.id, payload);
     else await createRule(payload);
+    _smartRules = await getRules().catch(() => _smartRules);
     closeActiveRuleEditor();
     return { success: true };
   } catch (err) {
@@ -1301,6 +1412,10 @@ function _handleRuleEditorChange(event) {
     updateRuleEditorDraftField('account_id', event.target.value);
     return true;
   }
+  if (id === 'rule-confidence-mode') {
+    updateRuleEditorDraftField('confidence_mode', event.target.value);
+    return true;
+  }
   if (id === 'rule-set-type') {
     updateRuleEditorDraftField('set_type', event.target.value);
     updateRuleEditorDraftField('set_ignored', event.target.value === 'Ignore');
@@ -1316,6 +1431,14 @@ function _handleRuleEditorChange(event) {
   }
   if (id === 'rule-unreviewed-only') {
     updateRuleEditorDraftField('apply_to_unreviewed_only', !!event.target.checked);
+    return true;
+  }
+  if (id === 'rule-apply-reviewed') {
+    updateRuleEditorDraftField('apply_reviewed', !!event.target.checked);
+    return true;
+  }
+  if (id === 'rule-apply-pending') {
+    updateRuleEditorDraftField('apply_to_pending', !!event.target.checked);
     return true;
   }
   if (id === 'rule-set-ignored') {
@@ -1345,6 +1468,10 @@ function _handleRuleEditorInput(event) {
   }
   if (id === 'rule-amount-max') {
     updateRuleEditorDraftField('amount_max', event.target.value);
+    return true;
+  }
+  if (id === 'rule-priority') {
+    updateRuleEditorDraftField('priority', event.target.value);
     return true;
   }
   return false;

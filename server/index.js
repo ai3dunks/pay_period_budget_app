@@ -35,6 +35,7 @@ app.use('/api/transactions', transactionsRoutes);
 app.use('/api/master-lists', masterListsRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/rules', rulesRoutes);
+app.use('/api/transaction-rules', rulesRoutes);
 app.use('/api/recurring-bills', recurringBillsRoutes);
 app.use('/api/history', historyRoutes);
 app.use('/api/closeout', closeoutRoutes);
