@@ -655,7 +655,7 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
     const headerHtml =
       '<header class="page-header">' +
       '<div class="page-header-main">' +
-      '<h2 class="page-title">Paycheck Planner</h2>' +
+      '<h2 class="page-title">Budget Plan</h2>' +
       '<p class="page-description">Plan this paycheck before money leaves the account.</p>' +
       '</div>' +
       '<div class="page-header-right"><span class="status-badge">Budget Period: ' + escapeHtml(periodLabel) + '</span></div>' +

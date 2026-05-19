@@ -549,6 +549,181 @@ function renderReportsPreview(reportsSummary, options = {}) {
   );
 }
 
+function renderSaasTopBar({ period, lastSyncLabel, syncState }) {
+  return (
+    '<header class="page-header dashboard-saas-header">' +
+    '<div class="page-header-main">' +
+    '<h2 class="page-title">This Pay Period</h2>' +
+    '<p class="page-description">A simple view of your paycheck, bills, spending, and next move.</p>' +
+    '</div>' +
+    '<div class="dashboard-banner-meta">' +
+    '<span class="badge-neutral">' + escapeHtml(formatPeriodLabel(period)) + '</span>' +
+    '<span class="badge-neutral">' + escapeHtml(lastSyncLabel) + '</span>' +
+    '<span class="' + (syncState === 'Connected' ? 'badge-good' : 'badge-warning') + '">' + escapeHtml(syncState) + '</span>' +
+    '</div>' +
+    '</header>'
+  );
+}
+
+function getSafeSpendMetric(summary) {
+  const safeSpend = summary.safeMoney?.safeToSpend || null;
+  if (safeSpend && String(safeSpend.status || '') !== 'unavailable') {
+    return {
+      amount: Number(safeSpend.amount || 0),
+      estimated: false,
+      status: safeSpend.status || 'warning',
+      helper: 'After bills, planned transfers, and reviewed spending.',
+    };
+  }
+
+  const estimated = Number(summary.income.budgetIncome || 0)
+    - Number(summary.recurringBills.unpaidTotal || 0)
+    - Number(summary.expenses.actualTotal || 0)
+    - Number(summary.transfers.total || 0);
+
+  return {
+    amount: estimated,
+    estimated: true,
+    status: estimated < 0 ? 'danger' : estimated < 100 ? 'warning' : 'good',
+    helper: 'Estimated after bills, planned transfers, and reviewed spending.',
+  };
+}
+
+function renderSafeToSpendHero(summary) {
+  const metric = getSafeSpendMetric(summary);
+  const tone = metric.status === 'danger' ? 'danger' : metric.status === 'warning' || metric.status === 'tight' ? 'warning' : 'good';
+  return (
+    '<section class="card safe-spend-hero safe-spend-hero--' + tone + '">' +
+    '<div>' +
+    '<p class="metric-label">Safe to Spend</p>' +
+    '<div class="safe-spend-value">' + escapeHtml(formatMoney(metric.amount)) + '</div>' +
+    '<p class="card-description">' + escapeHtml(metric.helper) + '</p>' +
+    '</div>' +
+    '<span class="dashboard-pill ' + (metric.estimated ? 'warning' : 'success') + '">' + escapeHtml(metric.estimated ? 'Estimated' : 'Current') + '</span>' +
+    '</section>'
+  );
+}
+
+function getReviewItems(transactions = []) {
+  return transactions
+    .filter((row) => !row.ignored)
+    .filter((row) => !row.reviewed || row.pending || (Array.isArray(row.split_lines) && row.split_lines.length > 0 && !row.split_is_final))
+    .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+}
+
+function renderDashboardKpis({ summary, reviewItems }) {
+  const assignedBills = Number(summary.recurringBills.dueTotal || 0);
+  const remainingBudget = Number(summary.income.budgetIncome || 0) - assignedBills - Number(summary.expenses.actualTotal || 0);
+  const cards = [
+    { label: 'Paycheck Income', value: formatMoney(summary.income.budgetIncome || 0), helper: summary.income.source || 'Selected pay period', tone: 'good' },
+    { label: 'Assigned Bills', value: formatMoney(assignedBills), helper: (summary.recurringBills.dueRows || []).length + ' due this period', tone: assignedBills > 0 ? 'warning' : 'good' },
+    { label: 'Remaining Budget', value: formatMoney(remainingBudget), helper: 'Income minus bills and reviewed spending', tone: remainingBudget < 0 ? 'danger' : 'good' },
+    { label: 'Needs Review', value: String(reviewItems.length), helper: 'Transactions needing a decision', tone: reviewItems.length ? 'warning' : 'good' },
+  ];
+  return '<section class="dashboard-kpi-grid">' + cards.map((card) => (
+    '<article class="card fintech-kpi fintech-kpi--' + card.tone + '">' +
+    '<p class="metric-label">' + escapeHtml(card.label) + '</p>' +
+    '<h3>' + escapeHtml(card.value) + '</h3>' +
+    '<p>' + escapeHtml(card.helper) + '</p>' +
+    '</article>'
+  )).join('') + '</section>';
+}
+
+function renderBudgetPlanCard(splitSummary) {
+  const rows = Array.isArray(splitSummary?.rows) ? splitSummary.rows : [];
+  const body = rows.map((row) => {
+    const allotted = Number(row.allotted || 0);
+    const actual = Number(row.actual || 0);
+    const remaining = Number(row.remaining || 0);
+    const progress = allotted > 0 ? Math.min(100, Math.max(0, (actual / allotted) * 100)) : 0;
+    const label = row.group === 'Debts/Savings' ? 'Debts/Savings' : row.group;
+    return (
+      '<div class="budget-plan-row">' +
+      '<div><strong>' + escapeHtml(label) + '</strong><span>' + escapeHtml(String(row.percent || 0)) + '%</span></div>' +
+      '<div>' + escapeHtml(formatMoney(allotted)) + '</div>' +
+      '<div>' + escapeHtml(formatMoney(actual)) + '</div>' +
+      '<div class="' + (remaining < 0 ? 'text-danger' : 'text-good') + '">' + escapeHtml(formatMoney(remaining)) + '</div>' +
+      '<div class="progress-track"><span style="width:' + progress.toFixed(0) + '%"></span></div>' +
+      '</div>'
+    );
+  }).join('');
+
+  return (
+    '<article class="card command-card compact">' +
+    '<div class="card-header"><h3 class="card-title">Budget Plan</h3><p class="card-description">Needs, Wants, and Debts/Savings for this paycheck.</p></div>' +
+    '<div class="budget-plan-table"><div class="budget-plan-heading"><span>Group</span><span>Allotted</span><span>Actual</span><span>Remaining</span></div>' +
+    body +
+    '</div>' +
+    '<div class="dashboard-secondary-actions"><button class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="paycheck-planner">Edit Plan</button></div>' +
+    '</article>'
+  );
+}
+
+function renderCashFlowCommandCard({ period, summary, forecast }) {
+  const projected = forecast?.summary?.projectedEndingCash;
+  const projectedAmount = Number(projected ?? getSafeSpendMetric(summary).amount);
+  const tone = projectedAmount < 0 ? 'danger' : projectedAmount < 100 ? 'warning' : 'good';
+  return (
+    '<article class="card command-card compact">' +
+    '<div class="card-header"><h3 class="card-title">Cash Flow Forecast</h3><p class="card-description">' + escapeHtml((period.startDate || '') + ' to ' + (period.displayEndDate || period.exclusiveEndDate || '')) + '</p></div>' +
+    '<div class="action-list">' +
+    '<div class="action-row"><span>Expected bills left</span><strong>' + escapeHtml(formatMoney(summary.recurringBills.unpaidTotal || 0)) + '</strong></div>' +
+    '<div class="action-row"><span>Expected spending left</span><strong>' + escapeHtml(formatMoney(Math.max(0, Number(summary.expenses.remaining || 0)))) + '</strong></div>' +
+    '<div class="action-row"><span>Projected end balance</span><strong class="text-' + tone + '">' + escapeHtml(formatMoney(projectedAmount)) + '</strong></div>' +
+    '</div>' +
+    '<div class="dashboard-secondary-actions"><button class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="cash-flow">Open Forecast</button></div>' +
+    '</article>'
+  );
+}
+
+function renderReviewNeededCard(reviewItems) {
+  const rows = reviewItems.slice(0, 5).map((row) => (
+    '<div class="review-needed-item">' +
+    '<div><strong>' + escapeHtml(row.name || row.merchant_name || 'Transaction') + '</strong><span>' + escapeHtml([row.date, row.account_name].filter(Boolean).join(' | ')) + '</span></div>' +
+    '<strong>' + escapeHtml(formatMoney(row.amount || 0)) + '</strong>' +
+    '</div>'
+  )).join('');
+  return (
+    '<article class="card command-card compact scroll-card">' +
+    '<div class="card-header"><h3 class="card-title">Review Needed</h3><p class="card-description">' + escapeHtml(String(reviewItems.length)) + ' transaction' + (reviewItems.length === 1 ? '' : 's') + ' need attention.</p></div>' +
+    '<div class="scroll-card-body">' + (rows || '<p class="empty-state">No review needed. Everything is caught up.</p>') + '</div>' +
+    '<div class="dashboard-secondary-actions"><button class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="transactions">Open Transactions</button></div>' +
+    '</article>'
+  );
+}
+
+function renderUpcomingBillsCard(summary) {
+  const rows = [...(summary.recurringBills.unpaidRows || [])]
+    .sort((a, b) => String(a.dueDate || '').localeCompare(String(b.dueDate || '')))
+    .slice(0, 5)
+    .map((row) => (
+      '<div class="upcoming-bill-item">' +
+      '<div><strong>' + escapeHtml(row.billName || row.name || 'Bill') + '</strong><span>' + escapeHtml(row.dueDateLabel || row.dueDate || '-') + '</span></div>' +
+      '<strong>' + escapeHtml(formatMoney(row.amount || 0)) + '</strong>' +
+      '<span class="' + (row.autopay ? 'badge-warning' : 'badge-neutral') + '">' + escapeHtml(row.autopay ? 'Autopay' : (row.statusLabel || 'Unpaid')) + '</span>' +
+      '</div>'
+    )).join('');
+  return (
+    '<article class="card command-card compact scroll-card">' +
+    '<div class="card-header"><h3 class="card-title">Upcoming Bills</h3><p class="card-description">Next unpaid bills in this pay period.</p></div>' +
+    '<div class="scroll-card-body">' + (rows || '<p class="empty-state">No bills due in this period.</p>') + '</div>' +
+    '<div class="dashboard-secondary-actions"><button class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="recurring-bills">Open Bills</button></div>' +
+    '</article>'
+  );
+}
+
+function renderNextMoneyMoveCard(actions) {
+  const action = actions?.[0] || { label: 'Everything looks good', reason: 'No urgent actions for this pay period.', buttonText: 'Stay here', destination: 'dashboard' };
+  return (
+    '<article class="card next-money-move-card">' +
+    '<p class="metric-label">Next Money Move</p>' +
+    '<h3>' + escapeHtml(action.label) + '</h3>' +
+    '<p>' + escapeHtml(action.reason) + '</p>' +
+    '<button class="button button-primary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="' + escapeHtml(action.destination) + '">' + escapeHtml(action.buttonText) + '</button>' +
+    '</article>'
+  );
+}
+
 function renderDashboardDebugPanel(data) {
   return (
     '<article class="card command-card compact">' +
@@ -673,32 +848,36 @@ export async function renderDashboard(container, options = {}) {
           ? { label: 'Reopened', className: 'info' }
           : null;
 
+    const reviewItems = getReviewItems(context.transactions);
     container.innerHTML =
-      '<div class="dashboard-page">' +
-      renderTopBar({ period: summary.period, dataHealthLabel, dataHealthStatus, lastSyncLabel, syncState, closeoutStatus }) +
-      renderCommandStrip() +
-      renderPrimaryCards(summary, { showPayPeriodCard, showSafeToSpendCard }) +
-      '<section class="dashboard-secondary-grid">' +
-      '<div class="dashboard-secondary-column">' +
-      (dashboardFeatureFlags.showBudgetSummaryCards ? renderBudgetSplitSummary(splitSummary) : '') +
-      (dashboardFeatureFlags.showBudgetSummaryCards ? renderEnvelopeSummary({ splitSummary, bucketSummary }) : '') +
-      renderReviewQueue(reviewStats, hasRulesEngine) +
-      renderBillsAttention(summary) +
+      '<div class="dashboard-page dashboard-saas-page">' +
+      renderSaasTopBar({ period: summary.period, lastSyncLabel, syncState }) +
+      (closeoutRecord && String(closeoutRecord.status || '').toLowerCase() === 'closed' ? '<div class="closeout-warning">Pay period closed.</div>' : '') +
+      (String(dataHealthStatus).toLowerCase() === 'warning' ? '<div class="dashboard-alert warning">Review flagged items before moving money.</div>' : '') +
+      (String(dataHealthStatus).toLowerCase() === 'needs_review' ? '<div class="dashboard-alert info">Some transactions or bills still need review.</div>' : '') +
+      (String(dataHealthStatus).toLowerCase() === 'error' ? '<div class="dashboard-alert danger">Data health has critical issues that need immediate attention.</div>' : '') +
+      renderSafeToSpendHero(summary) +
+      renderDashboardKpis({ summary, reviewItems }) +
+      '<section class="dashboard-command-grid">' +
+      '<div class="dashboard-command-left">' +
+      renderBudgetPlanCard(splitSummary) +
+      renderCashFlowCommandCard({ period, summary, forecast: cashFlowForecast }) +
       '</div>' +
-      '<div class="dashboard-secondary-column">' + (dashboardFeatureFlags.showCashFlowPreview ? renderCashFlowForecastCard(cashFlowForecast) : '') + (dashboardFeatureFlags.showTransferSummaryCard ? renderTransferActions(summary) : '') + (dashboardFeatureFlags.showBudgetSummaryCards ? renderSpendingWatchlists(summary) : '') + (dashboardFeatureFlags.showDebtPreview ? renderReportsPreview(reportsSummary, { showSafeToSpendCard }) : '') + renderNextBestActions(nextActions) + (dashboardFeatureFlags.showDebugPanels ? renderDashboardDebugPanel({
+      '<div class="dashboard-command-right">' +
+      renderReviewNeededCard(reviewItems) +
+      renderUpcomingBillsCard(summary) +
+      renderNextMoneyMoveCard(nextActions) +
+      '</div>' +
+      '</section>' +
+      (dashboardFeatureFlags.showDebugPanels ? renderDashboardDebugPanel({
         featureFlags: dashboardFeatureFlags,
         periodId: summary.period?.id || period.id,
         dataHealthStatus,
         reviewStats,
         splitTotals: splitSummary?.totals || null,
         renderedAt: new Date().toISOString(),
-      }) : '') + '</div>' +
-      '</section>' +
-      '</div>' +
-      (closeoutRecord && String(closeoutRecord.status || '').toLowerCase() === 'closed' ? '<div class="closeout-warning">Pay period closed.</div>' : '') +
-      (String(dataHealthStatus).toLowerCase() === 'warning' ? '<div class="dashboard-alert warning">Review flagged items before moving money.</div>' : '') +
-      (String(dataHealthStatus).toLowerCase() === 'needs_review' ? '<div class="dashboard-alert info">Some transactions or bills still need review.</div>' : '') +
-      (String(dataHealthStatus).toLowerCase() === 'error' ? '<div class="dashboard-alert danger">Data health has critical issues that need immediate attention.</div>' : '');
+      }) : '') +
+      '</div>';
 
     container.querySelectorAll('[data-action="dashboard-open-tab"]').forEach((button) => {
       button.addEventListener('click', () => {

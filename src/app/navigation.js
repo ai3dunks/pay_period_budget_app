@@ -21,20 +21,14 @@ export const PERIOD_AWARE_TABS = new Set([
 ]);
 
 export const tabs = [
-  { id: 'dashboard', label: 'Dashboard' },
-  { id: 'cash-flow', label: 'Cash Flow' },
-  { id: 'reports', label: 'Reports' },
-  { id: 'data-health', label: 'Data Health' },
-  { id: 'debt-snowball', label: 'Debt Snowball' },
-  { id: 'paycheck-planner', label: 'Paycheck Planner' },
-  { id: 'transactions', label: 'Transactions' },
-  { id: 'recurring-bills', label: 'Recurring Bills' },
-  { id: 'expenses', label: 'Expenses' },
+  { id: 'dashboard', label: 'Dashboard', mobileLabel: 'Home', mobile: true },
+  { id: 'transactions', label: 'Transactions', mobile: true },
+  { id: 'paycheck-planner', label: 'Budget Plan' },
+  { id: 'recurring-bills', label: 'Bills', mobile: true },
   { id: 'transfers', label: 'Transfers' },
-  { id: 'history', label: 'History' },
-  { id: 'closeout', label: 'Closeout' },
-  { id: 'master-lists', label: 'Master Lists' },
-  { id: 'settings', label: 'Settings' },
+  { id: 'debt-snowball', label: 'Debt' },
+  { id: 'reports', label: 'Reports' },
+  { id: 'settings', label: 'Settings', mobile: true },
 ];
 
 /**
@@ -44,20 +38,23 @@ export const tabs = [
 export function renderShell(app) {
   app.innerHTML =
     '<div class="app-layout">' +
+    '<header class="mobile-topbar"><div><strong>Pay Period Budget</strong><span>Plan this paycheck.</span></div><select id="budget-period-select-mobile" aria-label="Budget Period"></select></header>' +
     '<aside class="sidebar">' +
     '<div class="sidebar-brand">' +
-    '<h1>Budget Dashboard</h1>' +
-    '<p class="sidebar-subtitle">Local Personal Finance</p>' +
+    '<h1>Pay Period Budget</h1>' +
+    '<p class="sidebar-subtitle">Plan this paycheck before it disappears.</p>' +
     '</div>' +
-    '<nav class="nav" id="main-nav" aria-label="Primary"></nav>' +
-    '</aside>' +
-    '<main class="content">' +
-    '<section class="card budget-period-selector">' +
+    '<section class="budget-period-selector">' +
     '<label for="budget-period-select">Budget Period</label>' +
     '<select id="budget-period-select"></select>' +
     '</section>' +
+    '<nav class="nav" id="main-nav" aria-label="Primary"></nav>' +
+    '<section class="sidebar-sync-card"><span>Sync Status</span><strong>Ready</strong><small>Use Settings to connect or sync banks.</small></section>' +
+    '</aside>' +
+    '<main class="content">' +
     '<section id="page-content"></section>' +
     '</main>' +
+    '<nav class="mobile-bottom-nav" id="mobile-nav" aria-label="Mobile primary"></nav>' +
     '</div>';
   return document.getElementById('page-content');
 }
@@ -70,8 +67,9 @@ export function renderShell(app) {
  */
 export function renderNav(activeTab, onTabClick, disabledTabs = new Set()) {
   const nav = document.getElementById('main-nav');
-  if (!nav) return;
-  nav.innerHTML = '';
+  const mobileNav = document.getElementById('mobile-nav');
+  if (nav) nav.innerHTML = '';
+  if (mobileNav) mobileNav.innerHTML = '';
   for (const tab of tabs) {
     if (disabledTabs.has(tab.id)) continue;
     const button = document.createElement('button');
@@ -80,7 +78,17 @@ export function renderNav(activeTab, onTabClick, disabledTabs = new Set()) {
     button.textContent = tab.label;
     button.title = tab.label;
     button.addEventListener('click', () => onTabClick(tab.id));
-    nav.appendChild(button);
+    if (nav) nav.appendChild(button);
+
+    if (mobileNav && tab.mobile) {
+      const mobileButton = document.createElement('button');
+      mobileButton.type = 'button';
+      mobileButton.className = 'mobile-nav-btn' + (tab.id === activeTab ? ' active' : '');
+      mobileButton.textContent = tab.mobileLabel || tab.label;
+      mobileButton.title = tab.label;
+      mobileButton.addEventListener('click', () => onTabClick(tab.id));
+      mobileNav.appendChild(mobileButton);
+    }
   }
 }
 
@@ -90,12 +98,15 @@ export function renderNav(activeTab, onTabClick, disabledTabs = new Set()) {
  * @param {string} selectedId
  */
 export function renderBudgetPeriodSelector(periods, selectedId) {
-  const select = document.getElementById('budget-period-select');
-  if (!select) return;
-  select.innerHTML = periods
+  const optionsHtml = periods
     .slice()
     .reverse()
     .map((p) => '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(getPeriodLabel(p)) + '</option>')
     .join('');
-  select.value = selectedId;
+  ['budget-period-select', 'budget-period-select-mobile'].forEach((id) => {
+    const select = document.getElementById(id);
+    if (!select) return;
+    select.innerHTML = optionsHtml;
+    select.value = selectedId;
+  });
 }

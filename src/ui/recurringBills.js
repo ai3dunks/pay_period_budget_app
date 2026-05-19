@@ -9,6 +9,11 @@ import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCen
 import { getTransactionRowsForPeriod } from '../api/transactionsApi.js';
 
 const BACKEND = '';
+const _billFilters = {
+  paid: '',
+  autopay: '',
+  category: '',
+};
 
 /**
  * Fetch recurring bills from master lists API
@@ -221,6 +226,16 @@ export async function renderRecurringBills(container, period, periodLabel) {
     });
 
     const billsDue = summary.recurringBills.dueRows;
+    const billCategories = Array.from(new Set(billsDue.map((bill) => String(bill.category || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+    const visibleBills = billsDue.filter((bill) => {
+      const paid = !!bill.status?.paid;
+      if (_billFilters.paid === 'paid' && !paid) return false;
+      if (_billFilters.paid === 'unpaid' && paid) return false;
+      if (_billFilters.autopay === 'autopay' && !bill.autopay) return false;
+      if (_billFilters.autopay === 'manual' && bill.autopay) return false;
+      if (_billFilters.category && String(bill.category || '') !== _billFilters.category) return false;
+      return true;
+    });
     const totalDue = summary.recurringBills.dueTotal;
     const totalPaid = summary.recurringBills.paidTotal;
     const totalUnpaid = summary.recurringBills.unpaidTotal;
@@ -240,8 +255,8 @@ export async function renderRecurringBills(container, period, periodLabel) {
     const header = document.createElement('div');
     header.className = 'page-header';
     header.innerHTML =
-      '<h2 class="page-title">Recurring Bills</h2>' +
-      '<p>Track required bills for the selected budget period.</p>' +
+      '<div><h2 class="page-title">Bills</h2>' +
+      '<p class="page-description">A due-date checklist for this pay period.</p></div>' +
       '<div class="period-label">Budget Period: ' + escapeHtml(periodLabel) + '</div>';
     page.appendChild(header);
 
@@ -262,7 +277,7 @@ export async function renderRecurringBills(container, period, periodLabel) {
     const summaryCards = document.createElement('div');
     summaryCards.className = 'recurring-summary-grid';
     summaryCards.innerHTML =
-      '<article><p>Total Recurring Bills</p><h3>' + escapeHtml(formatCurrency(totalDue)) + '</h3></article>' +
+      '<article><p>Assigned Bills</p><h3>' + escapeHtml(formatCurrency(totalDue)) + '</h3></article>' +
       '<article><p>Total Paid</p><h3>' + escapeHtml(formatCurrency(totalPaid)) + '</h3></article>' +
       '<article><p>Total Unpaid</p><h3>' + escapeHtml(formatCurrency(totalUnpaid)) + '</h3></article>' +
       '<article><p>Bills Due</p><h3>' + escapeHtml(String(billsDue.length)) + '</h3></article>' +
@@ -281,32 +296,36 @@ export async function renderRecurringBills(container, period, periodLabel) {
 
     const billsSection = document.createElement('div');
     billsSection.className = 'bills-section';
+    const filters = document.createElement('div');
+    filters.className = 'card bills-filter-card form-grid';
+    filters.innerHTML =
+      '<label class="form-field"><span>Status</span><select id="bill-paid-filter"><option value="">All</option><option value="paid"' + (_billFilters.paid === 'paid' ? ' selected' : '') + '>Paid</option><option value="unpaid"' + (_billFilters.paid === 'unpaid' ? ' selected' : '') + '>Unpaid</option></select></label>' +
+      '<label class="form-field"><span>Autopay</span><select id="bill-autopay-filter"><option value="">All</option><option value="autopay"' + (_billFilters.autopay === 'autopay' ? ' selected' : '') + '>Autopay</option><option value="manual"' + (_billFilters.autopay === 'manual' ? ' selected' : '') + '>Manual</option></select></label>' +
+      '<label class="form-field"><span>Category</span><select id="bill-category-filter"><option value="">All</option>' + billCategories.map((category) => '<option value="' + escapeHtml(category) + '"' + (_billFilters.category === category ? ' selected' : '') + '>' + escapeHtml(category) + '</option>').join('') + '</select></label>';
+    page.appendChild(filters);
 
-    if (billsDue.length === 0) {
-      billsSection.innerHTML = '<p class="empty-state">No recurring bills are due in this budget period.</p>';
+    if (visibleBills.length === 0) {
+      billsSection.innerHTML = '<section class="card"><p class="empty-state">No bills match these filters.</p></section>';
     } else {
       const billsTable = document.createElement('table');
       billsTable.className = 'bills-table';
       const thead = document.createElement('thead');
       thead.innerHTML =
         '<tr>' +
-        '<th>Paid</th>' +
-        '<th>Name</th>' +
+        '<th>Due</th>' +
+        '<th>Bill</th>' +
         '<th>Category</th>' +
-        '<th>Due Date</th>' +
         '<th>Amount</th>' +
         '<th>Paid From</th>' +
-        '<th>Match Words</th>' +
-        '<th>Match Status</th>' +
         '<th>Autopay</th>' +
-        '<th>Active</th>' +
-        '<th>Notes</th>' +
+        '<th>Status</th>' +
+        '<th>Actions</th>' +
         '</tr>';
       billsTable.appendChild(thead);
 
       const tbody = document.createElement('tbody');
 
-      billsDue.forEach((bill) => {
+      visibleBills.forEach((bill) => {
         const status = bill.status;
         const isPaid = Boolean(status && status.paid);
         const isManual = Boolean(status && status.manuallyOverridden);
@@ -349,17 +368,16 @@ export async function renderRecurringBills(container, period, periodLabel) {
 
         const row = document.createElement('tr');
         row.innerHTML =
-          '<td><input type="checkbox" class="bill-paid-toggle" data-bill-id="' + escapeHtml(bill.id) + '" ' + (isPaid ? 'checked' : '') + ' /></td>' +
-          '<td>' + escapeHtml(bill.name) + autoPaidBadge + '</td>' +
-          '<td>' + escapeHtml(bill.category) + '</td>' +
           '<td>' + escapeHtml(bill.dueDateStr || '') + dueBadge + '</td>' +
+          '<td><strong>' + escapeHtml(bill.name) + '</strong>' + autoPaidBadge + '</td>' +
+          '<td>' + escapeHtml(bill.category) + '</td>' +
           '<td class="amount-column">' + escapeHtml(formatCurrency(bill.amount)) + '</td>' +
           '<td>' + escapeHtml(bill.paidFrom || '') + '</td>' +
-          '<td>' + escapeHtml((bill.matchWords || []).join(', ')) + '</td>' +
-          '<td>' + matchStatusHtml + '</td>' +
           '<td>' + (bill.autopay ? '<span class="badge-autopay">Yes</span>' : '-') + '</td>' +
-          '<td>' + (bill.active ? '<span class="badge-active">Active</span>' : '-') + '</td>' +
-          '<td>' + escapeHtml(bill.notes || '') + '</td>';
+          '<td>' + (isPaid ? '<span class="badge-good">Paid</span>' : matchStatusHtml) + '</td>' +
+          '<td class="inline-actions"><label class="bill-check-action"><input type="checkbox" class="bill-paid-toggle" data-bill-id="' + escapeHtml(bill.id) + '" ' + (isPaid ? 'checked' : '') + ' /> Paid</label>' +
+          (isManual ? '<button class="button button-secondary button-sm clear-override-btn" data-bill-id="' + escapeHtml(bill.id) + '">Clear</button>' : '') +
+          '</td>';
         tbody.appendChild(row);
       });
 
@@ -422,6 +440,21 @@ export async function renderRecurringBills(container, period, periodLabel) {
         button.disabled = false;
         button.textContent = 'Re-run auto-paid detection';
       }
+    });
+
+    page.querySelector('#bill-paid-filter')?.addEventListener('change', async (event) => {
+      _billFilters.paid = event.target.value;
+      await renderRecurringBills(renderContainer, period, periodLabel);
+    });
+
+    page.querySelector('#bill-autopay-filter')?.addEventListener('change', async (event) => {
+      _billFilters.autopay = event.target.value;
+      await renderRecurringBills(renderContainer, period, periodLabel);
+    });
+
+    page.querySelector('#bill-category-filter')?.addEventListener('change', async (event) => {
+      _billFilters.category = event.target.value;
+      await renderRecurringBills(renderContainer, period, periodLabel);
     });
 
     page.querySelectorAll('.bill-paid-toggle').forEach((checkbox) => {

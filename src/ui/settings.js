@@ -210,7 +210,7 @@ export async function renderSettings(container) {
   body.innerHTML =
     (settingsFeat('showPlaidConnections') ?
       '<section class="card settings-section">' +
-      '<div class="card-header"><h3 class="card-title">Plaid Connection</h3><p class="card-description">Connect your bank and sync transactions.</p></div>' +
+      '<div class="card-header"><h3 class="card-title">Bank Connections</h3><p class="card-description">Connect your bank and sync transactions.</p></div>' +
       '<div class="connection-status ' + (connected ? 'connected' : 'not-connected') + '">' +
       (connected ? 'Connected' : 'Not connected') +
       (accountCount > 0 ? ' <span class="account-count">' + accountCount + ' account' + (accountCount !== 1 ? 's' : '') + '</span>' : '') +
@@ -232,7 +232,7 @@ export async function renderSettings(container) {
 
     (settingsFeat('showAccountTabNames') ?
       '<section class="card settings-section">' +
-      '<div class="card-header"><h3 class="card-title">Account Tab Names</h3><p class="card-description">Rename account tabs shown on the Transactions page.</p></div>' +
+      '<div class="card-header"><h3 class="card-title">Account Mapping</h3><p class="card-description">Rename account tabs shown on the Transactions page.</p></div>' +
       (_accountTabNamesMessage ? '<p class="settings-message ' + (_accountTabNamesMessageType === 'error' ? 'error' : 'success') + '">' + escapeHtml(_accountTabNamesMessage) + '</p>' : '') +
       '<div class="table-wrap"><table class="table"><thead><tr><th>Default tab name</th><th>Custom tab name</th><th>Current tab label</th></tr></thead><tbody>' + accountLabelRows + '</tbody></table></div>' +
       '<div class="settings-actions">' +
@@ -243,7 +243,7 @@ export async function renderSettings(container) {
 
     (settingsFeat('showRulesManager') ?
       '<section class="card settings-section">' +
-      '<div class="card-header"><h3 class="card-title">Rules Manager</h3><p class="card-description">Manage saved transaction classification rules.</p></div>' +
+      '<div class="card-header"><h3 class="card-title">Rules</h3><p class="card-description">Manage saved transaction classification rules.</p></div>' +
       (_rulesMessage ? '<p class="settings-message ' + (_rulesMessageType === 'error' ? 'error' : 'success') + '">' + escapeHtml(_rulesMessage) + '</p>' : '') +
       '<div class="settings-actions"><button class="button button-secondary" data-action="rules-add">Add Rule</button></div>' +
       '<div class="table-wrap"><table class="table"><thead><tr><th>Status</th><th>Name</th><th>Match Type</th><th>Match Value</th><th>Type</th><th>Category</th><th>Actions</th></tr></thead>' +
@@ -252,8 +252,9 @@ export async function renderSettings(container) {
 
     (settingsFeat('showDataTools') ?
       '<section class="card settings-section">' +
-      '<div class="card-header"><h3 class="card-title">Data Tools</h3><p class="card-description">Quick actions for data checks and safety backups.</p></div>' +
+      '<div class="card-header"><h3 class="card-title">Privacy / Export / Reset</h3><p class="card-description">Quick actions for data checks, master lists, and safety backups.</p></div>' +
       '<div class="settings-actions">' +
+      '<button class="button button-secondary" data-action="data-tools-open-master-lists">Open Master Lists</button>' +
       '<button class="button button-secondary" data-action="data-tools-run-health">Run Data Health Check</button>' +
       '<button class="button button-secondary" data-action="data-tools-cleanup-removed-plaid">Clean removed bank data</button>' +
       '<button class="button button-secondary" data-action="data-tools-export-backup">Export Backup</button>' +
@@ -261,7 +262,7 @@ export async function renderSettings(container) {
 
     (settingsFeat('showSafeMoney') ?
       '<section class="card settings-section">' +
-      '<div class="card-header"><h3 class="card-title">Safe Money</h3><p class="card-description">Configure the shared safe-to-spend and safe-to-transfer rules.</p></div>' +
+      '<div class="card-header"><h3 class="card-title">Pending Transaction Controls</h3><p class="card-description">Configure safe-to-spend and pending transaction behavior.</p></div>' +
       '<div class="form-grid safe-money-settings-grid">' +
       '<label class="form-field"><span>Safety buffer</span><input id="safe-money-buffer" type="number" step="0.01" value="' + escapeHtml(String(safeMoneyBuffer)) + '"></label>' +
       '<label class="form-field checkbox-field"><span><input id="safe-money-pending" type="checkbox"' + (safeMoneyIncludePending ? ' checked' : '') + '> Include pending transactions in Safe Money</span></label>' +
@@ -273,7 +274,7 @@ export async function renderSettings(container) {
     _renderTransferTargetsSection(transferTargets, editingTransferTarget) +
 
     '<section class="card settings-section" id="command-center-recovery-section">' +
-    '<div class="card-header"><h3 class="card-title">Command Center Recovery</h3><p class="card-description">Restore defaults if Command Center visibility was changed by saved settings.</p></div>' +
+    '<div class="card-header"><h3 class="card-title">Feature Toggles</h3><p class="card-description">Restore defaults if page visibility was changed by saved settings.</p></div>' +
     '<div class="settings-actions"><button class="button button-secondary" data-action="cc-reset-all">Reset Command Center Defaults</button></div>' +
     '</section>' +
 
@@ -820,8 +821,8 @@ export function handleRuleEditorInput(e) {
 function _renderFrame(container) {
   container.innerHTML =
     '<header class="page-header">' +
-    '<div class="page-header-main"><h2 class="page-title">Settings</h2><p class="page-description">Connect Plaid and manage app setup.</p></div>' +
-    '<div class="page-header-right"><span class="status-badge">Local</span></div>' +
+    '<div class="page-header-main"><h2 class="page-title">Settings</h2><p class="page-description">A command center for banks, accounts, rules, lists, health, and privacy tools.</p></div>' +
+    '<div class="page-header-right"><span class="status-badge">Private local data</span></div>' +
     '</header>' +
     '<div id="page-body" class="page-body"></div>';
   return document.getElementById('page-body');

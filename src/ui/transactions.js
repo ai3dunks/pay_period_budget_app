@@ -40,8 +40,12 @@ let _pagination = {
 let _filters = {
   search: '',
   accountId: '',
+  startDate: '',
+  exclusiveEndDate: '',
   type: '',
+  category: '',
   reviewed: '',
+  pending: '',
   showIgnored: false,
   sort: 'date_desc',
 };
@@ -155,7 +159,7 @@ function _renderFrame(container) {
   const period = getActivePeriod();
   container.innerHTML =
     '<header class="page-header">' +
-    '<div class="page-header-main"><h2 class="page-title">Transactions</h2><p class="page-description">Review synced Plaid transactions.</p></div>' +
+    '<div class="page-header-main"><h2 class="page-title">Transactions</h2><p class="page-description">An inbox for new spending, bills, transfers, and income.</p></div>' +
     '<div class="page-header-right"><span class="status-badge">' + escapeHtml(getPeriodLabel(period)) + '</span></div>' +
     '</header><div id="page-body" class="page-body"></div>';
 }
@@ -168,13 +172,17 @@ function _buildQueryParams(period, offset) {
   };
 
   if (_viewMode === 'period' && period?.startDate && period?.exclusiveEndDate) {
-    params.startDate = period.startDate;
-    params.exclusiveEndDate = period.exclusiveEndDate;
+    params.startDate = _filters.startDate || period.startDate;
+    params.exclusiveEndDate = _filters.exclusiveEndDate || period.exclusiveEndDate;
   }
+  if (_viewMode !== 'period' && _filters.startDate) params.startDate = _filters.startDate;
+  if (_viewMode !== 'period' && _filters.exclusiveEndDate) params.exclusiveEndDate = _filters.exclusiveEndDate;
   if (_filters.search) params.search = _filters.search;
   if (_filters.accountId) params.accountId = _filters.accountId;
   if (_filters.type) params.type = _filters.type;
+  if (_filters.category) params.category = _filters.category;
   if (_filters.reviewed !== '') params.reviewed = _filters.reviewed;
+  if (_filters.pending !== '') params.pending = _filters.pending;
   if (!_filters.showIgnored) params.ignored = 'false';
 
   return params;
@@ -218,10 +226,18 @@ async function _fetchAndStore(period, offset) {
 function _filterLegacyRows(rows, period) {
   const searchNeedle = String(_filters.search || '').trim().toLowerCase();
   const next = rows
-    .filter((row) => _viewMode !== 'period' || _isRowInPeriod(row, period))
+    .filter((row) => _viewMode !== 'period' || _isRowInPeriod(row, {
+      ...period,
+      startDate: _filters.startDate || period?.startDate,
+      exclusiveEndDate: _filters.exclusiveEndDate || period?.exclusiveEndDate,
+    }))
+    .filter((row) => _viewMode === 'period' || !_filters.startDate || String(row.date || '').slice(0, 10) >= _filters.startDate)
+    .filter((row) => _viewMode === 'period' || !_filters.exclusiveEndDate || String(row.date || '').slice(0, 10) < _filters.exclusiveEndDate)
     .filter((row) => !_filters.accountId || String(row.account_id || '') === _filters.accountId)
     .filter((row) => _filters.showIgnored || !row.ignored)
     .filter((row) => !_filters.type || String(row.type || '') === _filters.type)
+    .filter((row) => !_filters.category || String(row.category || '') === _filters.category)
+    .filter((row) => _filters.pending === '' || (_filters.pending === 'true' ? !!row.pending : !row.pending))
     .filter((row) => {
       if (_filters.reviewed === 'true') return !!row.reviewed;
       if (_filters.reviewed === 'false') return !row.reviewed;
@@ -304,7 +320,7 @@ function _paint(body, period) {
       ? '<p class="settings-message error">Transactions loaded in compatibility mode. Restart backend to use pagination.</p>'
       : '') +
     (_txMessage ? '<p class="settings-message ' + (_txMessageType === 'error' ? 'error' : 'success') + '">' + escapeHtml(_txMessage) + '</p>' : '') +
-    '<div class="card-header"><h3 class="card-title">Synced Transactions</h3><p class="card-description transaction-count">' +
+    '<div class="card-header"><h3 class="card-title">Transaction Inbox</h3><p class="card-description transaction-count">' +
     _pagination.total + ' total transaction' + (_pagination.total !== 1 ? 's' : '') + '</p></div>' +
     (txFeat('showReviewQueue') ?
       '<div class="dashboard-grid transaction-stats">' +
@@ -316,14 +332,27 @@ function _paint(body, period) {
     (txFeat('showBankTabs') ? _renderAccountTabs() : '') +
     '<div class="form-grid">' +
     '<label class="form-field"><span>Search</span><input type="text" id="tx-search" value="' + escapeHtml(_filters.search) + '" placeholder="Description, merchant, category..."></label>' +
+    '<label class="form-field"><span>Account</span><select id="tx-account-filter">' +
+    _accountTabs.map((tab) => '<option value="' + escapeHtml(tab.id || '') + '"' + (String(_filters.accountId || '') === String(tab.id || '') ? ' selected' : '') + '>' + escapeHtml(tab.label || 'All accounts') + '</option>').join('') +
+    '</select></label>' +
     (txFeat('showAdvancedFilters') ?
+      '<label class="form-field"><span>Start</span><input type="date" id="tx-start-date" value="' + escapeHtml(_filters.startDate || '') + '"></label>' +
+      '<label class="form-field"><span>End</span><input type="date" id="tx-end-date" value="' + escapeHtml(_filters.exclusiveEndDate || '') + '"></label>' +
       '<label class="form-field"><span>Type</span><select id="tx-type-filter"><option value="">All</option>' +
       TRANSACTION_TYPES_FOR_FILTER.map((type) => '<option value="' + escapeHtml(type) + '"' + (_filters.type === type ? ' selected' : '') + '>' + type + '</option>').join('') +
+      '</select></label>' +
+      '<label class="form-field"><span>Category</span><select id="tx-category-filter"><option value="">All</option>' +
+      _expenseCategoryOptions.map((category) => '<option value="' + escapeHtml(category) + '"' + (_filters.category === category ? ' selected' : '') + '>' + escapeHtml(category) + '</option>').join('') +
       '</select></label>' +
       '<label class="form-field"><span>Reviewed</span><select id="tx-reviewed-filter">' +
       '<option value="">All</option>' +
       '<option value="true"' + (_filters.reviewed === 'true' ? ' selected' : '') + '>Reviewed</option>' +
       '<option value="false"' + (_filters.reviewed === 'false' ? ' selected' : '') + '>Needs Review</option>' +
+      '</select></label>' +
+      '<label class="form-field"><span>Pending</span><select id="tx-pending-filter">' +
+      '<option value="">All</option>' +
+      '<option value="true"' + (_filters.pending === 'true' ? ' selected' : '') + '>Pending</option>' +
+      '<option value="false"' + (_filters.pending === 'false' ? ' selected' : '') + '>Posted</option>' +
       '</select></label>' +
       '<label class="form-field field-checkbox"><input type="checkbox" id="tx-show-ignored"' + (_filters.showIgnored ? ' checked' : '') + '> <span>Show ignored</span></label>'
       : '') +
@@ -401,17 +430,21 @@ function _renderTable() {
       ? '<button class="button button-secondary button-sm" data-action="toggle-split-details" data-id="' + escapeHtml(row.id) + '">' + (isExpanded ? 'Hide Splits' : 'Show Splits') + '</button>'
       : '';
 
+    const statusPills = [
+      row.pending ? '<span class="badge-warning">Pending</span>' : '',
+      hasFinalSplits ? '<span class="badge-neutral">Split</span>' : '',
+      row.reviewed ? '<span class="badge-good">Reviewed</span>' : '<span class="badge-warning">Needs review</span>',
+    ].filter(Boolean).join(' ');
+
     const parentRow = (
       '<tr>' +
       '<td>' + escapeHtml(row.date || '') + '</td>' +
+      '<td><strong>' + escapeHtml(row.merchant_name || row.name || '') + '</strong>' + (splitBadge ? '<br>' + splitBadge : '') + (showRawPlaidDetails ? '<br><small>' + escapeHtml(row.name || '') + '</small>' : '') + '</td>' +
       '<td>' + escapeHtml(row.account_name || '') + (row.mask ? ' (\u2022' + escapeHtml(row.mask) + ')' : '') + (showRawPlaidDetails ? '<br><small>' + escapeHtml(row.institution_name || '') + '</small>' : '') + '</td>' +
-      '<td>' + escapeHtml(row.name || '') + (splitBadge ? '<br>' + splitBadge : '') + '</td>' +
-      '<td>' + escapeHtml(row.merchant_name || '') + '</td>' +
-      '<td class="' + (Number(row.amount || 0) < 0 ? 'amount-negative' : 'amount-positive') + '">' + escapeHtml(formatAmount(row.amount)) + '</td>' +
-      '<td>' + (row.pending ? 'Pending' : '') + '</td>' +
+      '<td class="amount-cell ' + (Number(row.amount || 0) < 0 ? 'amount-expense' : 'amount-income') + '">' + escapeHtml(formatAmount(row.amount)) + '</td>' +
       '<td>' + (hasFinalSplits ? '<span class="muted-note">-</span>' : (row.type ? '<span class="type-badge">' + escapeHtml(row.type) + '</span>' : '<span class="muted-note">-</span>')) + '</td>' +
       '<td>' + (hasFinalSplits ? '<span class="muted-note">-</span>' : (row.category ? '<span class="category-badge">' + escapeHtml(row.category) + '</span>' : '<span class="muted-note">-</span>')) + '</td>' +
-      '<td>' + (row.reviewed ? '<span class="status-reviewed">Reviewed</span>' : '<span class="status-needs-review">Needs Review</span>') + '</td>' +
+      '<td class="transaction-status-cell">' + statusPills + '</td>' +
       '<td class="transaction-actions">' +
       (isFeatureEnabled(_txCcSettings, 'transactions', 'showSplitTransactionTools') ? '<button class="button button-secondary button-sm" data-action="open-split-editor" data-id="' + escapeHtml(row.id) + '">Split</button>' : '') +
       splitToggle +
@@ -433,14 +466,14 @@ function _renderTable() {
     )).join('');
 
     return parentRow +
-      '<tr class="split-detail-row"><td colspan="10">' +
+      '<tr class="split-detail-row"><td colspan="8">' +
       '<div class="split-detail-shell">' +
       '<div class="split-detail-summary">Split total: $' + escapeHtml(Number(row.split_total || 0).toFixed(2)) + ' / Parent: $' + escapeHtml(Math.abs(Number(row.amount || 0)).toFixed(2)) + '</div>' +
       '<div class="table-wrap"><table class="table table-compact"><thead><tr><th>Category</th><th>Subcategory</th><th>Note</th><th>Amount</th></tr></thead><tbody>' + splitRowsHtml + '</tbody></table></div>' +
       '</div></td></tr>';
   }).join('');
 
-  return '<div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Account</th><th>Description</th><th>Merchant</th><th>Amount</th><th>Pending</th><th>Type</th><th>Category</th><th>Reviewed</th><th>Actions</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
+  return '<div class="table-wrap transaction-table-wrap"><table class="table transaction-inbox-table"><thead><tr><th>Date</th><th>Merchant</th><th>Account</th><th>Amount</th><th>Type</th><th>Category</th><th>Status</th><th>Actions</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
 }
 
 function _calculateSplitTotals(parentAmount, splitLines) {
@@ -720,13 +753,38 @@ function _attachDelegation(body) {
       await _fetchAndRender(period, 0);
       return;
     }
+    if (id === 'tx-account-filter') {
+      _filters.accountId = event.target.value;
+      await _fetchAndRender(period, 0);
+      return;
+    }
+    if (id === 'tx-start-date') {
+      _filters.startDate = event.target.value;
+      await _fetchAndRender(period, 0);
+      return;
+    }
+    if (id === 'tx-end-date') {
+      _filters.exclusiveEndDate = event.target.value;
+      await _fetchAndRender(period, 0);
+      return;
+    }
     if (id === 'tx-type-filter') {
       _filters.type = event.target.value;
       await _fetchAndRender(period, 0);
       return;
     }
+    if (id === 'tx-category-filter') {
+      _filters.category = event.target.value;
+      await _fetchAndRender(period, 0);
+      return;
+    }
     if (id === 'tx-reviewed-filter') {
       _filters.reviewed = event.target.value;
+      await _fetchAndRender(period, 0);
+      return;
+    }
+    if (id === 'tx-pending-filter') {
+      _filters.pending = event.target.value;
       await _fetchAndRender(period, 0);
       return;
     }

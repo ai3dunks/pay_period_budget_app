@@ -268,6 +268,7 @@ function _attachGlobalListeners() {
     if (action === 'cleanup-removed-plaid') { await handleCleanupRemovedPlaid(btn); return; }
     if (action === 'data-tools-cleanup-removed-plaid') { await handleCleanupRemovedPlaid(btn); return; }
     if (action === 'data-tools-run-health') { setActiveTab('data-health'); _renderNav(); renderActivePage(); return; }
+    if (action === 'data-tools-open-master-lists') { setActiveTab('master-lists'); _renderNav(); renderActivePage(); return; }
     if (action === 'data-tools-export-backup') { await _downloadBackup(); return; }
     if (action === 'open-settings') { setActiveTab('settings'); _renderNav(); renderActivePage(); return; }
 
@@ -291,7 +292,7 @@ function _attachGlobalListeners() {
 
   document.addEventListener('change', (e) => {
     // Budget period selector
-    if (e.target?.id === 'budget-period-select') {
+    if (e.target?.id === 'budget-period-select' || e.target?.id === 'budget-period-select-mobile') {
       const periodId = e.target.value;
       setSelectedPeriodId(periodId); // persists to localStorage internally
       window.dispatchEvent(new CustomEvent('budget:period-changed', { detail: { periodId } }));
