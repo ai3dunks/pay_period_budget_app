@@ -939,6 +939,7 @@ function _attachDelegation(body) {
       button.disabled = true;
       const id = button.dataset.id;
       const errorEl = document.getElementById('review-error');
+      if (errorEl) errorEl.textContent = '';
       const type = document.getElementById('review-type')?.value;
       const category = document.getElementById('review-category')?.value;
       const notes = document.getElementById('review-notes')?.value;
@@ -947,6 +948,7 @@ function _attachDelegation(body) {
       try {
         const updatedRow = await patchTransaction(id, { type, category, notes, reviewed, ignored });
         const shouldCreateRule = !!document.getElementById('review-create-rule')?.checked;
+        let followUpError = '';
         if (shouldCreateRule) {
           const sourceRow = { ...(_rows.find((item) => item.id === id) || _reviewModalRow || {}), ...updatedRow };
           const payload = createRuleFromTransaction(sourceRow, type, category);
@@ -959,11 +961,15 @@ function _attachDelegation(body) {
           payload.apply_to_unreviewed_only = true;
           const createdRule = await createRule(payload);
           if (document.getElementById('review-rule-apply-current')?.checked && createdRule?.id) {
-            await applyRule(createdRule.id, {
-              periodId: getActivePeriod()?.id,
-              unreviewedOnly: true,
-              excludeTransactionId: id,
-            });
+            try {
+              await applyRule(createdRule.id, {
+                periodId: getActivePeriod()?.id,
+                unreviewedOnly: true,
+                excludeTransactionId: id,
+              });
+            } catch (err) {
+              followUpError = err?.message || 'Failed to apply the new rule to current matches.';
+            }
           }
           _smartRules = await getRules().catch(() => _smartRules);
         }
@@ -973,10 +979,15 @@ function _attachDelegation(body) {
         _reviewModalTxId = null;
         _reviewModalRow = null;
         _reviewDraft = null;
-        _txMessage = shouldCreateRule
-          ? 'Rule created. Future matching transactions will use this category.'
-          : 'Transaction updated.';
-        _txMessageType = 'success';
+        if (followUpError) {
+          _txMessage = 'Transaction updated and rule saved, but current-match apply failed: ' + followUpError;
+          _txMessageType = 'error';
+        } else {
+          _txMessage = shouldCreateRule
+            ? 'Rule created. Future matching transactions will use this category.'
+            : 'Transaction updated.';
+          _txMessageType = 'success';
+        }
         emitAppEvent('budget:transactions-updated');
         _repaint();
       } catch (err) {
@@ -1046,8 +1057,21 @@ function _attachDelegation(body) {
           String(result.pendingMatchedCount || 0) + ' pending.' +
           (result.sourceTransactionExcluded ? ' Source transaction excluded.' : '');
       } catch (err) {
-        messageEl.className = 'settings-message error';
-        messageEl.textContent = err?.message || 'Failed to preview matches.';
+        const fallbackMatches = previewRuleMatches(payload, _rows).filter((match) => String(match.transactionId || match.transaction?.id || '') !== String(row.id || ''));
+        if (err?.status === 404) {
+          const unreviewedCount = fallbackMatches.filter((match) => !match.reviewed && !match.transaction?.reviewed).length;
+          const reviewedCount = fallbackMatches.filter((match) => !!(match.reviewed || match.transaction?.reviewed)).length;
+          const pendingCount = fallbackMatches.filter((match) => !!(match.pending || match.transaction?.pending)).length;
+          messageEl.className = 'settings-message success';
+          messageEl.textContent =
+            'Matched ' + String(fallbackMatches.length) + ' visible transaction(s): ' +
+            String(unreviewedCount) + ' unreviewed, ' +
+            String(reviewedCount) + ' reviewed, and ' +
+            String(pendingCount) + ' pending. Backend preview route unavailable.';
+        } else {
+          messageEl.className = 'settings-message error';
+          messageEl.textContent = err?.message || 'Failed to preview matches.';
+        }
       }
       return;
     }
