@@ -17,7 +17,7 @@ import { normalizeText } from './text.js';
 
 export { calculateSafeToSpend, calculateSafeToTransfer } from './safeMoney.js';
 
-const DEFAULT_BUDGET_SPLIT = { Needs: 60, Wants: 20, 'Debts/Savings': 20 };
+const DEFAULT_BUDGET_SPLIT = { Needs: 50, Wants: 30, 'Debts/Savings': 20 };
 const DEFAULT_SAFE_MONEY_SETTINGS = {
   safetyBuffer: 100,
   includePendingTransactions: false,

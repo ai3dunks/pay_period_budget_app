@@ -7,7 +7,7 @@ import { isDateInBudgetPeriod } from './budgetPeriods.js';
 import { toNumber } from './money.js';
 import { normalizeText } from './text.js';
 
-const DEFAULT_BUDGET_SPLIT = { Needs: 60, Wants: 20, 'Debts/Savings': 20 };
+const DEFAULT_BUDGET_SPLIT = { Needs: 50, Wants: 30, 'Debts/Savings': 20 };
 const BUDGET_CATEGORIES = ['Needs', 'Wants', 'Debts/Savings'];
 
 export const TRANSFER_TARGET_KIND_OPTIONS = ['person', 'checking', 'savings', 'credit_card', 'debt', 'other'];

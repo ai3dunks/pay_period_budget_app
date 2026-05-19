@@ -30,7 +30,7 @@ import { getTransactionRowsForPeriod } from '../api/transactionsApi.js';
 import { getTransferTargetsConfig } from '../utils/transferTargets.js';
 
 const BACKEND = '';
-const DEFAULT_BUDGET_SPLIT = { Needs: 60, Wants: 20, 'Debts/Savings': 20 };
+const DEFAULT_BUDGET_SPLIT = { Needs: 50, Wants: 30, 'Debts/Savings': 20 };
 
 function escapeHtml(value) {
   return String(value ?? '')

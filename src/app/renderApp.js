@@ -71,6 +71,10 @@ export function bootApp() {
     if (id) setPendingReviewTransactionId(id);
     _navigate('transactions');
   });
+  window.addEventListener('app:open-tab', (e) => {
+    const tabId = e.detail?.tabId;
+    if (tabId) _navigate(tabId);
+  });
 }
 
 function _navigate(tabId) {
