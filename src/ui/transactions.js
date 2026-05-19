@@ -959,7 +959,11 @@ function _attachDelegation(body) {
           payload.apply_to_unreviewed_only = true;
           const createdRule = await createRule(payload);
           if (document.getElementById('review-rule-apply-current')?.checked && createdRule?.id) {
-            await applyRule(createdRule.id, { periodId: getActivePeriod()?.id, unreviewedOnly: true });
+            await applyRule(createdRule.id, {
+              periodId: getActivePeriod()?.id,
+              unreviewedOnly: true,
+              excludeTransactionId: id,
+            });
           }
           _smartRules = await getRules().catch(() => _smartRules);
         }
@@ -1027,9 +1031,16 @@ function _attachDelegation(body) {
       const payload = createRuleFromTransaction(row, document.getElementById('review-type')?.value, document.getElementById('review-category')?.value);
       payload.match_type = document.getElementById('review-rule-match-type')?.value || payload.match_type;
       payload.match_value = document.getElementById('review-rule-match-value')?.value || payload.match_value;
-      const matches = previewRuleMatches(payload, _rows).filter((match) => !match.transaction.reviewed);
+      const result = await previewRuleDraft({
+        ...payload,
+        excludeTransactionId: row.id,
+      }, getActivePeriod()?.id);
       messageEl.className = 'settings-message success';
-      messageEl.textContent = 'This rule matches ' + String(matches.length) + ' existing unreviewed transaction(s).';
+      messageEl.textContent =
+        'This rule matches ' + String(result.unreviewedMatchedCount || 0) + ' unreviewed transaction(s), ' +
+        String(result.reviewedMatchedCount || 0) + ' reviewed transaction(s), and ' +
+        String(result.pendingMatchedCount || 0) + ' pending transaction(s).' +
+        (Number(result.sourceExcludedCount || 0) > 0 ? ' Source transaction excluded.' : '');
       return;
     }
     if (action === 'close-rule-editor') {

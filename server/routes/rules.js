@@ -97,22 +97,24 @@ function listRules(includeDisabled = true) {
 function listTransactionsForRules(periodId) {
   const rows = db.prepare(
     `SELECT
-      id,
-      plaid_transaction_id,
-      account_id,
-      plaid_account_id,
-      date,
-      name,
-      merchant_name,
-      amount,
-      pending,
-      type,
-      category,
-      reviewed,
-      ignored,
-      notes,
-      raw_json
-    FROM transactions
+      t.id,
+      t.plaid_transaction_id,
+      t.account_id,
+      t.plaid_account_id,
+      t.date,
+      t.name,
+      t.merchant_name,
+      t.amount,
+      t.pending,
+      t.type,
+      t.category,
+      t.reviewed,
+      t.ignored,
+      t.notes,
+      t.raw_json,
+      a.name AS account_name
+    FROM transactions t
+    LEFT JOIN accounts a ON a.id = t.account_id
     ORDER BY date DESC`
   ).all();
 
@@ -205,7 +207,9 @@ router.post('/preview-draft', (req, res) => {
   try {
     const rule = normalizeRulePayload(req.body || {}, false);
     const transactions = listTransactionsForRules(req.body?.periodId || null);
-    const preview = evaluateRulePreview(rule, transactions);
+    const preview = evaluateRulePreview(rule, transactions, {
+      excludeTransactionId: req.body?.excludeTransactionId || rule.created_from_transaction_id || null,
+    });
     res.json(preview);
   } catch (err) {
     console.error('POST /api/rules/preview-draft error:', err);
@@ -217,7 +221,9 @@ router.post('/:id/preview', (req, res) => {
   try {
     const rule = db.prepare('SELECT * FROM transaction_rules WHERE id = ?').get(req.params.id);
     if (!rule) return res.status(404).json({ error: 'Rule not found.' });
-    const preview = evaluateRulePreview(rule, listTransactionsForRules(req.body?.periodId || null));
+    const preview = evaluateRulePreview(rule, listTransactionsForRules(req.body?.periodId || null), {
+      excludeTransactionId: req.body?.excludeTransactionId || rule.created_from_transaction_id || null,
+    });
     res.json(preview);
   } catch (err) {
     console.error('POST /api/rules/:id/preview error:', err);
@@ -229,7 +235,9 @@ router.post('/:id/apply', (req, res) => {
   try {
     const rule = db.prepare('SELECT * FROM transaction_rules WHERE id = ?').get(req.params.id);
     if (!rule) return res.status(404).json({ error: 'Rule not found.' });
-    const preview = evaluateRulePreview(rule, listTransactionsForRules(req.body?.periodId || null));
+    const preview = evaluateRulePreview(rule, listTransactionsForRules(req.body?.periodId || null), {
+      excludeTransactionId: req.body?.excludeTransactionId || rule.created_from_transaction_id || null,
+    });
     const applyToUnreviewedOnly = req.body?.unreviewedOnly === false ? false : true;
     const stmt = db.prepare('UPDATE transactions SET type = ?, category = ?, reviewed = ?, ignored = ?, updated_at = ? WHERE id = ?');
     const now = new Date().toISOString();

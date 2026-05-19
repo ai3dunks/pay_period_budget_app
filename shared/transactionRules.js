@@ -18,8 +18,18 @@ export function normalizeDescription(value) {
 }
 
 export function normalizeMerchantName(value) {
-  return normalizeDescription(value)
+  return normalizeMerchantCandidate(value)
     .replace(/\b(store|supercenter|market|inc|llc|co|company)\b/g, ' ')
+    .replace(/\bpurchase\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeMerchantCandidate(value) {
+  return normalizeDescription(value)
+    .replace(/\bwal\s+mart\b/g, 'walmart')
+    .replace(/\bwalmart\s+supercenter\b/g, 'walmart')
+    .replace(/\bwm\b(?=\s+(supercenter|store|market|purchase))/, 'walmart')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -49,20 +59,40 @@ function getOriginalDescription(transaction) {
   }
 }
 
+function getReferenceDescription(transaction) {
+  if (!transaction?.raw_json) return '';
+  try {
+    const raw = typeof transaction.raw_json === 'string' ? JSON.parse(transaction.raw_json) : transaction.raw_json;
+    return String(raw?.payment_meta?.reference_number || '').trim();
+  } catch {
+    return '';
+  }
+}
+
 function getMatchCandidates(transaction, matchType) {
   const candidates = {
     name: String(transaction?.name || '').trim(),
     merchant: String(transaction?.merchant_name || '').trim(),
     description: String(transaction?.description || '').trim(),
     originalDescription: getOriginalDescription(transaction),
+    referenceDescription: getReferenceDescription(transaction),
   };
-  if (matchType === 'merchant_contains' || matchType === 'merchant_equals') return [candidates.merchant];
+  if (matchType === 'merchant_contains' || matchType === 'merchant_equals') {
+    return [
+      candidates.merchant,
+      candidates.name,
+      candidates.description,
+      candidates.originalDescription,
+      candidates.referenceDescription,
+    ];
+  }
   if (matchType === 'description_contains') return [candidates.name, candidates.description, candidates.originalDescription];
   return [
     candidates.name,
     candidates.merchant,
     candidates.description,
     candidates.originalDescription,
+    candidates.referenceDescription,
   ];
 }
 
@@ -186,13 +216,25 @@ export function detectRuleConflicts(rules = []) {
 export function evaluateRulePreview(rule, transactions = [], options = {}) {
   const rows = [];
   let matchedCount = 0;
+  let unreviewedMatchedCount = 0;
+  let reviewedMatchedCount = 0;
+  let pendingMatchedCount = 0;
+  let sourceExcludedCount = 0;
   let updatedCount = 0;
   let skippedPendingCount = 0;
   let skippedReviewedCount = 0;
+  const excludedTransactionId = String(options.excludeTransactionId || rule?.created_from_transaction_id || '').trim();
 
   for (const transaction of transactions || []) {
     if (!transactionMatchesRule(transaction, rule)) continue;
+    if (excludedTransactionId && String(transaction?.id || '') === excludedTransactionId) {
+      sourceExcludedCount += 1;
+      continue;
+    }
     matchedCount += 1;
+    if (transaction?.pending) pendingMatchedCount += 1;
+    if (transaction?.reviewed) reviewedMatchedCount += 1;
+    else unreviewedMatchedCount += 1;
     const updates = buildRuleUpdate(transaction, rule);
     const pendingBlocked = !!transaction?.pending && !toBooleanFlag(rule.apply_to_pending);
     const reviewedBlocked = !!transaction?.reviewed && rule.apply_to_unreviewed_only !== false;
@@ -222,6 +264,7 @@ export function evaluateRulePreview(rule, transactions = [], options = {}) {
       skipReason: pendingBlocked ? 'pending' : (reviewedBlocked ? 'reviewed' : null),
       confidenceMode: rule.confidence_mode || 'suggest',
       accountId: transaction?.account_id || transaction?.plaid_account_id || null,
+      accountName: transaction?.account_name || null,
       merchantName: transaction?.merchant_name || transaction?.name || '',
       date: transaction?.date || null,
     });
@@ -231,6 +274,11 @@ export function evaluateRulePreview(rule, transactions = [], options = {}) {
 
   return {
     matchedCount,
+    unreviewedMatchedCount,
+    reviewedMatchedCount,
+    pendingMatchedCount,
+    sourceTransactionExcluded: sourceExcludedCount > 0,
+    sourceExcludedCount,
     updatedCount,
     skippedPendingCount,
     skippedReviewedCount,
