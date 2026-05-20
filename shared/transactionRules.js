@@ -4,6 +4,7 @@
  */
 
 function toNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
@@ -13,8 +14,15 @@ export function normalizeDescription(value) {
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\bwal\s+mart\b/g, 'walmart')
+    .replace(/\bwalmart\s+supercenter\b/g, 'walmart')
+    .replace(/\bwm\b(?=\s+(supercenter|store|market|purchase))/, 'walmart')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+export function normalizeRuleComparableText(value) {
+  return normalizeDescription(value);
 }
 
 export function normalizeMerchantName(value) {
@@ -26,16 +34,13 @@ export function normalizeMerchantName(value) {
 }
 
 function normalizeMerchantCandidate(value) {
-  return normalizeDescription(value)
-    .replace(/\bwal\s+mart\b/g, 'walmart')
-    .replace(/\bwalmart\s+supercenter\b/g, 'walmart')
-    .replace(/\bwm\b(?=\s+(supercenter|store|market|purchase))/, 'walmart')
+  return normalizeRuleComparableText(value)
     .replace(/\s+/g, ' ')
     .trim();
 }
 
 function normalizeText(value) {
-  return normalizeDescription(value);
+  return normalizeRuleComparableText(value);
 }
 
 function toBooleanFlag(value) {
@@ -98,28 +103,16 @@ function getMatchCandidates(transaction, matchType) {
 
 function matchesByType(candidate, matchValue, matchType) {
   const isMerchant = String(matchType || '').startsWith('merchant');
-  const haystack = isMerchant ? normalizeMerchantName(candidate) : normalizeText(candidate);
-  const needle = isMerchant ? normalizeMerchantName(matchValue) : normalizeText(matchValue);
+  const haystack = isMerchant ? normalizeMerchantName(candidate) : normalizeRuleComparableText(candidate);
+  const needle = isMerchant ? normalizeMerchantName(matchValue) : normalizeRuleComparableText(matchValue);
   if (!needle || !haystack) return false;
   if (matchType === 'exact' || matchType === 'merchant_equals') return haystack === needle;
   if (matchType === 'starts_with') return haystack.startsWith(needle);
   return haystack.includes(needle);
 }
 
-export function transactionMatchesRule(transaction, rule) {
-  if (!rule || !toBooleanFlag(rule.enabled)) return false;
-  if (String(rule.confidence_mode || 'auto_apply') === 'ignore') return false;
-
-  const applyToUnreviewedOnly =
-    rule.apply_to_unreviewed_only === undefined
-      ? true
-      : toBooleanFlag(rule.apply_to_unreviewed_only);
-
-  if (applyToUnreviewedOnly && toBooleanFlag(transaction?.reviewed)) return false;
-
-  const setsIgnored = toBooleanFlag(rule.set_ignored);
-  if (toBooleanFlag(transaction?.ignored) && !setsIgnored) return false;
-
+export function transactionTextMatchesRule(transaction, rule) {
+  if (!rule) return false;
   if (
     rule.account_id &&
     transaction?.account_id !== rule.account_id &&
@@ -138,6 +131,42 @@ export function transactionMatchesRule(transaction, rule) {
   if (!String(rule.match_value || '').trim()) return false;
   const candidates = getMatchCandidates(transaction, matchType);
   return candidates.some((candidate) => matchesByType(candidate, rule.match_value, matchType));
+}
+
+export function transactionIsEligibleForRuleApply(transaction, rule, options = {}) {
+  const excludedTransactionId = String(options.excludeTransactionId || rule?.created_from_transaction_id || '').trim();
+  if (excludedTransactionId && String(transaction?.id || '') === excludedTransactionId) {
+    return { eligible: false, skipReason: 'source' };
+  }
+
+  if (!rule || String(rule.confidence_mode || 'auto_apply') === 'ignore') {
+    return { eligible: false, skipReason: 'ignored' };
+  }
+
+  const setsIgnored = toBooleanFlag(rule.set_ignored);
+  if (toBooleanFlag(transaction?.ignored) && !setsIgnored) {
+    return { eligible: false, skipReason: 'ignored' };
+  }
+
+  if (!!transaction?.pending && !toBooleanFlag(rule.apply_to_pending)) {
+    return { eligible: false, skipReason: 'pending' };
+  }
+
+  const applyToUnreviewedOnly =
+    rule.apply_to_unreviewed_only === undefined
+      ? true
+      : toBooleanFlag(rule.apply_to_unreviewed_only);
+  if (applyToUnreviewedOnly && toBooleanFlag(transaction?.reviewed)) {
+    return { eligible: false, skipReason: 'reviewed' };
+  }
+
+  return { eligible: true, skipReason: null };
+}
+
+export function transactionMatchesRule(transaction, rule) {
+  if (!rule || !toBooleanFlag(rule.enabled)) return false;
+  if (!transactionTextMatchesRule(transaction, rule)) return false;
+  return transactionIsEligibleForRuleApply(transaction, rule).eligible;
 }
 
 function buildRuleUpdate(transaction, rule) {
@@ -223,12 +252,15 @@ export function evaluateRulePreview(rule, transactions = [], options = {}) {
   let updatedCount = 0;
   let skippedPendingCount = 0;
   let skippedReviewedCount = 0;
+  let skippedIgnoredCount = 0;
+  let skippedSourceCount = 0;
   const excludedTransactionId = String(options.excludeTransactionId || rule?.created_from_transaction_id || '').trim();
 
   for (const transaction of transactions || []) {
-    if (!transactionMatchesRule(transaction, rule)) continue;
+    if (!transactionTextMatchesRule(transaction, rule)) continue;
     if (excludedTransactionId && String(transaction?.id || '') === excludedTransactionId) {
       sourceExcludedCount += 1;
+      skippedSourceCount += 1;
       continue;
     }
     matchedCount += 1;
@@ -236,12 +268,11 @@ export function evaluateRulePreview(rule, transactions = [], options = {}) {
     if (transaction?.reviewed) reviewedMatchedCount += 1;
     else unreviewedMatchedCount += 1;
     const updates = buildRuleUpdate(transaction, rule);
-    const pendingBlocked = !!transaction?.pending && !toBooleanFlag(rule.apply_to_pending);
-    const reviewedBlocked = !!transaction?.reviewed && rule.apply_to_unreviewed_only !== false;
-    const skipped = pendingBlocked || reviewedBlocked;
+    const eligibility = transactionIsEligibleForRuleApply(transaction, rule);
 
-    if (pendingBlocked) skippedPendingCount += 1;
-    if (reviewedBlocked) skippedReviewedCount += 1;
+    if (eligibility.skipReason === 'pending') skippedPendingCount += 1;
+    if (eligibility.skipReason === 'reviewed') skippedReviewedCount += 1;
+    if (eligibility.skipReason === 'ignored') skippedIgnoredCount += 1;
 
     rows.push({
       transactionId: transaction.id,
@@ -255,13 +286,15 @@ export function evaluateRulePreview(rule, transactions = [], options = {}) {
       reviewedLabel: transaction?.reviewed ? 'Reviewed' : 'Needs review',
       currentType: transaction?.type ?? null,
       currentCategory: transaction?.category ?? null,
+      name: transaction?.name || '',
+      amount: Number(transaction?.amount || 0),
       newType: updates?.type ?? transaction?.type ?? null,
       newCategory: updates?.category ?? transaction?.category ?? null,
       newReviewed: updates?.reviewed === true,
       applyToPending: toBooleanFlag(rule.apply_to_pending),
       applyReviewed: toBooleanFlag(rule.apply_reviewed),
-      willApply: !skipped,
-      skipReason: pendingBlocked ? 'pending' : (reviewedBlocked ? 'reviewed' : null),
+      willApply: eligibility.eligible && !!updates,
+      skipReason: eligibility.skipReason,
       confidenceMode: rule.confidence_mode || 'suggest',
       accountId: transaction?.account_id || transaction?.plaid_account_id || null,
       accountName: transaction?.account_name || null,
@@ -269,7 +302,7 @@ export function evaluateRulePreview(rule, transactions = [], options = {}) {
       date: transaction?.date || null,
     });
 
-    if (!skipped && updates) updatedCount += 1;
+    if (eligibility.eligible && updates) updatedCount += 1;
   }
 
   return {
@@ -279,16 +312,20 @@ export function evaluateRulePreview(rule, transactions = [], options = {}) {
     pendingMatchedCount,
     sourceTransactionExcluded: sourceExcludedCount > 0,
     sourceExcludedCount,
+    skippedSourceCount,
+    applyableCount: updatedCount,
     updatedCount,
     skippedPendingCount,
     skippedReviewedCount,
+    skippedIgnoredCount,
     skippedConflictCount: 0,
     preview: rows,
   };
 }
 
 export function applyRuleToTransaction(transaction, rule) {
-  if (!transactionMatchesRule(transaction, rule)) return null;
+  if (!transactionTextMatchesRule(transaction, rule)) return null;
+  if (!transactionIsEligibleForRuleApply(transaction, rule).eligible) return null;
   const updates = buildRuleUpdate(transaction, rule);
   if (!updates) return null;
   return { ...transaction, ...updates };
@@ -345,8 +382,8 @@ export function applyRulesToTransactions(transactions = [], rules = []) {
   const results = [];
   for (const transaction of transactions || []) {
     for (const rule of enabledRules) {
-      if (transaction?.pending && !toBooleanFlag(rule.apply_to_pending)) continue;
-      if (!transactionMatchesRule(transaction, rule)) continue;
+      if (!transactionTextMatchesRule(transaction, rule)) continue;
+      if (!transactionIsEligibleForRuleApply(transaction, rule).eligible) continue;
       const updates = buildRuleUpdate(transaction, rule);
       if (!updates) continue;
       results.push({

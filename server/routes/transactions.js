@@ -182,7 +182,7 @@ router.get('/', (req, res) => {
   if (searchTerm) {
     const needle = '%' + searchTerm.toLowerCase() + '%';
     conditions.push(
-      '(LOWER(COALESCE(t.name, "")) LIKE ? OR LOWER(COALESCE(t.merchant_name, "")) LIKE ? OR LOWER(COALESCE(t.category, "")) LIKE ? OR LOWER(COALESCE(t.type, "")) LIKE ? OR LOWER(COALESCE(t.notes, "")) LIKE ?)'
+      "(LOWER(COALESCE(t.name, '')) LIKE ? OR LOWER(COALESCE(t.merchant_name, '')) LIKE ? OR LOWER(COALESCE(t.category, '')) LIKE ? OR LOWER(COALESCE(t.type, '')) LIKE ? OR LOWER(COALESCE(t.notes, '')) LIKE ?)"
     );
     params.push(needle, needle, needle, needle, needle);
   }

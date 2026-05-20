@@ -377,7 +377,7 @@ export async function renderExpenses(container) {
         '<div class="expense-review-item">' +
         '<div><strong>' + escapeHtml(row.date || '-') + '</strong><br><span>' + escapeHtml(row.name || '-') + '</span></div>' +
         '<div class="expense-review-amount">' + escapeHtml(formatSignedCurrency(row.amount)) + '</div>' +
-          '<div class="inline-actions"><button class="button button-secondary button-sm" data-action="expense-review-transaction" data-id="' + escapeHtml(row.reviewTransactionId || row.id) + '">Review</button></div>' +
+          '<div class="inline-actions"><button type="button" class="button button-secondary button-sm" data-action="expense-review-transaction" data-id="' + escapeHtml(row.reviewTransactionId || row.id) + '">Review</button></div>' +
         '</div>'
       ).join('') + '</div>'
     : '<div class="expenses-review-list"><p class="empty-state">No uncategorized transactions in this period.</p></div>';

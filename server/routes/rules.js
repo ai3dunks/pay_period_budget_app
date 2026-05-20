@@ -141,6 +141,17 @@ function ruleToPreview(rule, periodId) {
   return evaluateRulePreview(rule, transactions).preview;
 }
 
+function withRulePreviewLabels(preview, rule) {
+  return {
+    ...preview,
+    preview: (preview.preview || []).map((row) => ({
+      ...row,
+      ruleId: rule?.id || row.ruleId || null,
+      ruleName: rule?.name || rule?.match_value || row.ruleName || 'Rule',
+    })),
+  };
+}
+
 router.get('/', (_req, res) => {
   try {
     res.json(listRules(true));
@@ -224,7 +235,7 @@ router.post('/preview-draft', (req, res) => {
     const preview = evaluateRulePreview(rule, transactions, {
       excludeTransactionId: req.body?.excludeTransactionId || rule.created_from_transaction_id || null,
     });
-    res.json(preview);
+    res.json(withRulePreviewLabels(preview, rule));
   } catch (err) {
     console.error('POST /api/rules/preview-draft error:', err);
     res.status(400).json({ error: 'Failed to preview rule.' });
@@ -238,7 +249,7 @@ router.post('/:id/preview', (req, res) => {
     const preview = evaluateRulePreview(rule, listTransactionsForRules(getRuleScope(req.body || {})), {
       excludeTransactionId: req.body?.excludeTransactionId || rule.created_from_transaction_id || null,
     });
-    res.json(preview);
+    res.json(withRulePreviewLabels(preview, rule));
   } catch (err) {
     console.error('POST /api/rules/:id/preview error:', err);
     res.status(500).json({ error: 'Failed to preview rule.' });
@@ -252,13 +263,14 @@ router.post('/:id/apply', (req, res) => {
     const preview = evaluateRulePreview(rule, listTransactionsForRules(getRuleScope(req.body || {})), {
       excludeTransactionId: req.body?.excludeTransactionId || rule.created_from_transaction_id || null,
     });
+    const labeledPreview = withRulePreviewLabels(preview, rule);
     const applyToUnreviewedOnly = req.body?.unreviewedOnly === false ? false : true;
     const stmt = db.prepare('UPDATE transactions SET type = ?, category = ?, reviewed = ?, ignored = ?, updated_at = ? WHERE id = ?');
     const now = new Date().toISOString();
     let updatedCount = 0;
     let skippedPendingCount = 0;
     let skippedReviewedCount = 0;
-    for (const row of preview.preview) {
+    for (const row of labeledPreview.preview) {
       if (!row.willApply) {
         if (row.skipReason === 'pending') skippedPendingCount += 1;
         if (row.skipReason === 'reviewed') skippedReviewedCount += 1;
@@ -285,7 +297,7 @@ router.post('/:id/apply', (req, res) => {
       skippedPendingCount,
       skippedReviewedCount,
       skippedConflictCount: preview.skippedConflictCount || 0,
-      preview: preview.preview,
+      preview: labeledPreview.preview,
     });
   } catch (err) {
     console.error('POST /api/rules/:id/apply error:', err);
@@ -347,35 +359,49 @@ router.post('/apply', (req, res) => {
     let skippedPendingCount = 0;
     let skippedReviewedCount = 0;
 
-    if (!dryRun) {
-      const stmt = db.prepare(
-        'UPDATE transactions SET type = ?, category = ?, ignored = ?, reviewed = ?, updated_at = ? WHERE id = ?'
-      );
-      const now = new Date().toISOString();
-      for (const transaction of transactions) {
-        for (const rule of rules) {
-          const evaluation = evaluateRulePreview(rule, [transaction]);
-          const row = evaluation.preview[0];
-          if (!row) continue;
-          preview.push(row);
-          if (!row.willApply) {
-            if (row.skipReason === 'pending') skippedPendingCount += 1;
-            if (row.skipReason === 'reviewed') skippedReviewedCount += 1;
-            continue;
-          }
-          const result = stmt.run(
-            safeSqlValue(row.newType ?? transaction.type ?? null),
-            safeSqlValue(row.newCategory ?? transaction.category ?? null),
-            row.newType === 'Ignore' || row.newCategory === 'Ignore' ? 1 : 0,
-            row.newReviewed ? 1 : 0,
-            now,
-            transaction.id
-          );
-          if (result.changes > 0) updatedCount++;
-          if (rule.id) touchedRuleIds.add(rule.id);
+    const stmt = dryRun
+      ? null
+      : db.prepare('UPDATE transactions SET type = ?, category = ?, ignored = ?, reviewed = ?, updated_at = ? WHERE id = ?');
+    const now = new Date().toISOString();
+
+    for (const transaction of transactions) {
+      for (const rule of rules) {
+        const evaluation = evaluateRulePreview(rule, [transaction]);
+        const row = evaluation.preview[0];
+        if (!row) continue;
+
+        preview.push({
+          ...row,
+          ruleId: rule.id,
+          ruleName: rule.name || rule.match_value || 'Rule',
+        });
+
+        if (!row.willApply) {
+          if (row.skipReason === 'pending') skippedPendingCount += 1;
+          if (row.skipReason === 'reviewed') skippedReviewedCount += 1;
+          continue;
+        }
+
+        if (dryRun) {
+          updatedCount += 1;
           break;
         }
+
+        const result = stmt.run(
+          safeSqlValue(row.newType ?? transaction.type ?? null),
+          safeSqlValue(row.newCategory ?? transaction.category ?? null),
+          row.newType === 'Ignore' || row.newCategory === 'Ignore' ? 1 : 0,
+          row.newReviewed ? 1 : 0,
+          now,
+          transaction.id
+        );
+        if (result.changes > 0) updatedCount++;
+        if (rule.id) touchedRuleIds.add(rule.id);
+        break;
       }
+    }
+
+    if (!dryRun) {
       for (const ruleId of touchedRuleIds) {
         db.prepare('UPDATE transaction_rules SET last_applied_at = ?, updated_at = ? WHERE id = ?').run(now, now, ruleId);
       }

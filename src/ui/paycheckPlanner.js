@@ -13,6 +13,7 @@ import {
   assignTransactionToBucket,
 } from '../api/budgetBucketsApi.js';
 import { getTransactionRowsForPeriod } from '../api/transactionsApi.js';
+import { withPreservedRenderState } from '../utils/renderStability.js';
 
 const BACKEND = '';
 const BUDGET_SPLIT_GROUPS = ['Needs', 'Wants', 'Debts/Savings'];
@@ -651,12 +652,22 @@ function renderCategoryAccordions(bucketRowsByGroup) {
             '</tr>';
         }).join('') +
         '</tbody></table></div>'
-      : '<div class="budget-plan-empty-mini"><strong>No categorized spending yet</strong><p>Reviewed transactions will appear here after they are categorized.</p><button class="button button-secondary button-sm" data-action="budget-plan-open-tab" data-tab-id="transactions">Review Transactions</button></div>';
+      : '<div class="budget-plan-empty-mini"><strong>No categorized spending yet</strong><p>Reviewed transactions will appear here after they are categorized.</p><button type="button" class="button button-secondary button-sm" data-action="budget-plan-open-tab" data-tab-id="transactions">Review Transactions</button></div>';
     return '<details class="card budget-plan-accordion"><summary><span>' + escapeHtml(label) + '</span><span>' + escapeHtml(String(rows.length)) + ' categories</span></summary>' + body + '</details>';
   }).join('');
 }
 
 export async function renderPaycheckPlanner(container, period, periodLabel) {
+  const alreadyRendered = container.dataset.renderedPage === 'paycheck-planner';
+  const run = async () => {
+    const result = await renderPaycheckPlannerInner(container, period, periodLabel);
+    container.dataset.renderedPage = 'paycheck-planner';
+    return result;
+  };
+  return alreadyRendered ? withPreservedRenderState(run) : run();
+}
+
+async function renderPaycheckPlannerInner(container, period, periodLabel) {
   const selectedPeriod = getSelectedBudgetPeriod(period);
   container.innerHTML =
     '<div class="budget-plan-page">' +
@@ -758,10 +769,10 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
     const noPaycheckWarning = income.hasPaycheck ? '' :
       '<section class="dashboard-alert warning budget-plan-warning"><strong>No paycheck found</strong><span>No paycheck found for this period. Use manual override or check income detection.</span></section>';
     const reviewWarning = (unreviewedCount || uncategorizedCount)
-      ? '<section class="dashboard-alert warning budget-plan-warning"><strong>Some transactions still need review, so actuals may change.</strong><span>' + escapeHtml(String(unreviewedCount)) + ' unreviewed, ' + escapeHtml(String(uncategorizedCount)) + ' uncategorized.</span><button class="button button-secondary button-sm" data-action="budget-plan-open-tab" data-tab-id="transactions">Review Transactions</button></section>'
+      ? '<section class="dashboard-alert warning budget-plan-warning"><strong>Some transactions still need review, so actuals may change.</strong><span>' + escapeHtml(String(unreviewedCount)) + ' unreviewed, ' + escapeHtml(String(uncategorizedCount)) + ' uncategorized.</span><button type="button" class="button button-secondary button-sm" data-action="budget-plan-open-tab" data-tab-id="transactions">Review Transactions</button></section>'
       : '';
     const noBillsState = billsDue.length ? '' :
-      '<section class="card budget-plan-empty-card"><h3>No bills found for this period</h3><p>Add recurring bills to make this budget plan more accurate.</p><button class="button button-secondary" data-action="budget-plan-open-tab" data-tab-id="recurring-bills">Go to Bills</button></section>';
+      '<section class="card budget-plan-empty-card"><h3>No bills found for this period</h3><p>Add recurring bills to make this budget plan more accurate.</p><button type="button" class="button button-secondary" data-action="budget-plan-open-tab" data-tab-id="recurring-bills">Go to Bills</button></section>';
 
     const detailRowsByGroup = BUDGET_SPLIT_GROUPS.reduce((acc, group) => {
       const rows = calculateActualSourceBreakdown(group, actualResult.details);
@@ -847,7 +858,7 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
       '<select id="budget-preset-select" class="budget-preset-select">' + presetSelectOptions + '</select>' +
       '<div class="budget-preset-grid">' + buildPresetOptions(budgetPlanDraft.presetKey) + '</div>' +
       '<div class="budget-plan-custom-editor">' + splitInputs + '<div class="budget-plan-percent-total ' + (validation.valid ? 'valid' : 'invalid') + '"><span>Total</span><strong>' + escapeHtml(validation.total.toFixed(0)) + '%</strong><small>' + escapeHtml(validation.message) + '</small></div></div>' +
-      '<div class="inline-actions"><button class="button button-secondary" data-action="budget-plan-reset-standard">Reset to 50/30/20</button><button class="button button-primary" data-action="budget-plan-save-percentages" ' + (validation.valid ? '' : 'disabled') + '>Save Percentages</button></div>' +
+      '<div class="inline-actions"><button type="button" class="button button-secondary" data-action="budget-plan-reset-standard">Reset to 50/30/20</button><button type="button" class="button button-primary" data-action="budget-plan-save-percentages" ' + (validation.valid ? '' : 'disabled') + '>Save Percentages</button></div>' +
       savedNote +
       (!validation.valid ? '<div class="settings-message error">Percentages must total 100%.</div>' : '') +
       (!splitSettingsRaw || !Object.keys(splitSettingsRaw).length ? '<div class="budget-plan-empty-mini"><strong>Using Standard 50/30/20</strong><p>You can switch presets or create a custom split anytime.</p></div>' : '') +
@@ -859,7 +870,7 @@ export async function renderPaycheckPlanner(container, period, periodLabel) {
       '</section>' +
       '<section class="budget-plan-accordion-grid">' + renderCategoryAccordions(detailRowsByGroup) + '</section>' +
       '<section class="card budget-plan-helper-card"><h3>How actuals are calculated</h3><p>Actuals use items inside the selected pay period.</p><ul><li>Bills due this period</li><li>Reviewed transactions in this period</li><li>Confirmed transfers in this period</li><li>Debt/savings payments in this period</li></ul><p>' + escapeHtml(includePendingTransactions ? 'Pending transactions are included based on your Settings.' : 'Pending transactions are excluded based on your Settings.') + '</p></section>' +
-      (ppFeat('showManualOverride') ? '<section class="card budget-plan-income-card"><div class="card-header"><h3 class="card-title">Paycheck Source</h3><p class="card-description">Use this only when payroll detection misses the selected period.</p></div><div class="form-grid"><label class="form-field"><span>Manual income override</span><input id="planner-income-input" type="number" step="0.01" value="' + escapeHtml(String(manualIncomeMap?.[selectedPeriod.id] ?? (income.amount || ''))) + '"></label></div><div class="inline-actions"><button class="button button-secondary" data-action="planner-save-income">Save Manual Override</button><button class="button button-secondary" data-action="planner-use-detected-income" ' + (detectedPayroll.detected ? '' : 'disabled') + '>Use Detected Paycheck</button><button class="button button-secondary" data-action="planner-clear-income" ' + (manualIncomeMap?.[selectedPeriod.id] !== undefined ? '' : 'disabled') + '>Clear Manual Override</button></div><div id="planner-income-message" class="settings-message"></div></section>' : '') +
+      (ppFeat('showManualOverride') ? '<section class="card budget-plan-income-card"><div class="card-header"><h3 class="card-title">Paycheck Source</h3><p class="card-description">Use this only when payroll detection misses the selected period.</p></div><div class="form-grid"><label class="form-field"><span>Manual income override</span><input id="planner-income-input" type="number" step="0.01" value="' + escapeHtml(String(manualIncomeMap?.[selectedPeriod.id] ?? (income.amount || ''))) + '"></label></div><div class="inline-actions"><button type="button" class="button button-secondary" data-action="planner-save-income">Save Manual Override</button><button type="button" class="button button-secondary" data-action="planner-use-detected-income" ' + (detectedPayroll.detected ? '' : 'disabled') + '>Use Detected Paycheck</button><button type="button" class="button button-secondary" data-action="planner-clear-income" ' + (manualIncomeMap?.[selectedPeriod.id] !== undefined ? '' : 'disabled') + '>Clear Manual Override</button></div><div id="planner-income-message" class="settings-message"></div></section>' : '') +
       noBillsState +
       '</div>';
 
@@ -1145,7 +1156,7 @@ async function renderLegacyPaycheckPlanner(container, period, periodLabel) {
       '<div><strong>Paid bills total:</strong> ' + escapeHtml(formatCurrencyValue(alreadyPaid)) + '</div>' +
       '<div><strong>Expense budget:</strong> ' + escapeHtml(formatCurrencyValue(expenseBudgetTotal)) + '</div>' +
       '</div>' +
-      '<div class="inline-actions"><button class="button button-secondary button-sm" data-action="planner-toggle-counted-bills">Show counted bills</button></div>' +
+      '<div class="inline-actions"><button type="button" class="button button-secondary button-sm" data-action="planner-toggle-counted-bills">Show counted bills</button></div>' +
       '<div id="planner-counted-bills" hidden>' +
       (billsDue.length
         ? '<div class="table-wrap"><table class="table planner-table"><thead><tr><th>Name</th><th>Due date</th><th>Amount</th><th>Category</th><th>Paid status</th></tr></thead><tbody>' + breakdownRows + '</tbody></table></div>'
@@ -1167,10 +1178,10 @@ async function renderLegacyPaycheckPlanner(container, period, periodLabel) {
       '<label class="form-field"><span>Manual income override</span><input id="planner-income-input" type="number" step="0.01" value="' + escapeHtml(String(hasManualIncome ? manualIncome : budgetIncome || '')) + '" placeholder="Enter income"></label>' +
       '</div>' +
       '<div class="inline-actions">' +
-      '<button class="button button-primary" data-action="planner-save-income">Save manual income</button>' +
-      '<button class="button button-secondary" data-action="planner-use-detected-income" ' + (detectedPayroll.detected ? '' : 'disabled') + '>Use detected payroll income</button>' +
-      '<button class="button button-secondary" data-action="planner-clear-income" ' + (hasManualIncome ? '' : 'disabled') + '>Clear manual override</button>' +
-      '<button class="button button-secondary" data-action="planner-run-auto-detect">Re-run auto-paid detection</button>' +
+      '<button type="button" class="button button-primary" data-action="planner-save-income">Save manual income</button>' +
+      '<button type="button" class="button button-secondary" data-action="planner-use-detected-income" ' + (detectedPayroll.detected ? '' : 'disabled') + '>Use detected payroll income</button>' +
+      '<button type="button" class="button button-secondary" data-action="planner-clear-income" ' + (hasManualIncome ? '' : 'disabled') + '>Clear manual override</button>' +
+      '<button type="button" class="button button-secondary" data-action="planner-run-auto-detect">Re-run auto-paid detection</button>' +
       '</div>' +
       '<div id="planner-income-message" class="settings-message"></div>' +
       '</div>',
@@ -1213,7 +1224,7 @@ async function renderLegacyPaycheckPlanner(container, period, periodLabel) {
       '<div class="table-wrap"><table class="table planner-table"><thead><tr><th>Group</th><th>Allotted Budget</th><th>Actual</th><th>Remaining Budget</th></tr></thead><tbody>' + splitResultRowsHtml + '<tr class="planner-total-row"><td>Total</td><td>' + escapeHtml(formatCurrencyValue(splitEngine.totals.allotted || 0)) + '</td><td>' + escapeHtml(formatCurrencyValue(splitEngine.totals.actual || 0)) + '</td><td>' + escapeHtml(formatCurrencyValue(splitEngine.totals.remaining || 0)) + '</td></tr></tbody></table></div>' +
       '</div>' +
       '<div class="inline-actions">' +
-      '<button class="button button-primary" data-action="planner-save-budget-split" ' + (splitEngine.validation.isValid ? '' : 'disabled') + '>Save Budget Split</button>' +
+      '<button type="button" class="button button-primary" data-action="planner-save-budget-split" ' + (splitEngine.validation.isValid ? '' : 'disabled') + '>Save Budget Split</button>' +
       '</div>' +
       '<div id="planner-allocation-message" class="settings-message"></div>',
       'planner-allocation-card'
@@ -1259,9 +1270,9 @@ async function renderLegacyPaycheckPlanner(container, period, periodLabel) {
             '<td>' + escapeHtml(formatCurrencyValue(remaining)) + '</td>' +
             '<td><div class="planner-progress-track"><div class="planner-progress-fill" style="width:' + Math.min(100, Math.max(0, progressPercent)) + '%"></div></div><span class="muted-note">' + escapeHtml(String(progressPercent)) + '%</span></td>' +
             '<td class="planner-bucket-actions">' +
-            '<button class="button button-secondary button-sm" data-action="planner-edit-bucket" data-bucket-id="' + escapeHtml(bucket.id) + '">Edit</button>' +
-            '<button class="button button-secondary button-sm" data-action="planner-delete-bucket" data-bucket-id="' + escapeHtml(bucket.id) + '">Delete</button>' +
-            '<button class="button button-secondary button-sm" data-action="planner-assign-transaction" data-bucket-id="' + escapeHtml(bucket.id) + '">Assign Transaction</button>' +
+            '<button type="button" class="button button-secondary button-sm" data-action="planner-edit-bucket" data-bucket-id="' + escapeHtml(bucket.id) + '">Edit</button>' +
+            '<button type="button" class="button button-secondary button-sm" data-action="planner-delete-bucket" data-bucket-id="' + escapeHtml(bucket.id) + '">Delete</button>' +
+            '<button type="button" class="button button-secondary button-sm" data-action="planner-assign-transaction" data-bucket-id="' + escapeHtml(bucket.id) + '">Assign Transaction</button>' +
             '</td>' +
             '</tr>';
         }).join('')
@@ -1274,7 +1285,7 @@ async function renderLegacyPaycheckPlanner(container, period, periodLabel) {
         '<div class="action-row"><span>Group Bucket Total</span><strong>' + escapeHtml(formatCurrencyValue(groupBucketTotal)) + '</strong></div>' +
         '<div class="action-row"><span>Group Unassigned</span><strong>' + escapeHtml(formatCurrencyValue(groupUnassigned)) + '</strong></div>' +
         warningHtml +
-        '<div class="inline-actions"><button class="button button-primary button-sm" data-action="planner-add-bucket" data-group="' + escapeHtml(group) + '">Add Bucket</button></div>' +
+        '<div class="inline-actions"><button type="button" class="button button-primary button-sm" data-action="planner-add-bucket" data-group="' + escapeHtml(group) + '">Add Bucket</button></div>' +
         '<div class="table-wrap"><table class="table planner-table"><thead><tr><th>Bucket Name</th><th>Budget Group</th><th>Planned</th><th>Spent</th><th>Remaining</th><th>Progress</th><th>Actions</th></tr></thead><tbody>' + bodyRows + '</tbody></table></div>' +
         '</section>'
       );

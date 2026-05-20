@@ -10,6 +10,7 @@ import {
   getSnowballTransfers,
 } from '../api/snowballTransferApi.js';
 import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
+import { withPreservedRenderState } from '../utils/renderStability.js';
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -476,7 +477,7 @@ function renderAvailableExtraPaymentShell({ strategy, periodLabel, sourceLabel, 
     : 'No Confirmed Transfer Amount';
   const tableHtml = suggestedRows.length
     ? '<div class="table-wrap debt-extra-shell-table-wrap"><table class="table debt-extra-shell-table"><thead><tr><th>Debt Account</th><th>Current Balance</th><th>Suggested Payment</th><th>Action</th></tr></thead><tbody>' +
-      suggestedRows.map((row) => '<tr' + (row.paidOff ? ' class="debt-extra-shell-row-paid"' : '') + '><td>' + escapeHtml(row.debtName) + '</td><td>' + escapeHtml(formatCurrency(row.currentBalance)) + '</td><td>' + escapeHtml(formatCurrency(row.suggestedPayment)) + '</td><td><button class="button button-primary button-sm" data-action="confirm-suggested-payment" data-debt-id="' + escapeHtml(String(row.debtId || '')) + '" data-debt-name="' + escapeHtml(row.debtName) + '" data-amount="' + escapeHtml(String(row.suggestedPayment || 0)) + '">Confirm</button></td></tr>').join('') +
+      suggestedRows.map((row) => '<tr' + (row.paidOff ? ' class="debt-extra-shell-row-paid"' : '') + '><td>' + escapeHtml(row.debtName) + '</td><td>' + escapeHtml(formatCurrency(row.currentBalance)) + '</td><td>' + escapeHtml(formatCurrency(row.suggestedPayment)) + '</td><td><button type="button" class="button button-primary button-sm" data-action="confirm-suggested-payment" data-debt-id="' + escapeHtml(String(row.debtId || '')) + '" data-debt-name="' + escapeHtml(row.debtName) + '" data-amount="' + escapeHtml(String(row.suggestedPayment || 0)) + '">Confirm</button></td></tr>').join('') +
       '</tbody></table></div>'
     : '<div class="debt-extra-shell-empty">No confirmed extra debt payment available for this budget period.</div>';
   return (
@@ -547,6 +548,16 @@ function parseSourceRows(container) {
 }
 
 export async function renderDebtSnowball(container, period, periodLabel, periods = []) {
+  const alreadyRendered = container.dataset.renderedPage === 'debt-snowball';
+  const run = async () => {
+    const result = await renderDebtSnowballInner(container, period, periodLabel, periods);
+    container.dataset.renderedPage = 'debt-snowball';
+    return result;
+  };
+  return alreadyRendered ? withPreservedRenderState(run) : run();
+}
+
+async function renderDebtSnowballInner(container, period, periodLabel, periods = []) {
   container.innerHTML = '<section class="card"><p class="empty-state">Loading Debt Snowball Tracker...</p></section>';
 
   try {
@@ -635,7 +646,7 @@ export async function renderDebtSnowball(container, period, periodLabel, periods
       '</section><section class="card debt-grid-card"><div class="card-header"><h3 class="card-title">Debt Tracker Grid</h3></div><div class="debt-columns-scroll">' + (dsFeat('showDebtAccounts') ? renderDebtCards(plan) : '') +
       '</div></section></main></div><details class="card debt-source-card" open><summary>Fill out your debt info in the table below. This page will automatically sort your debts from the smallest to highest balance.</summary><div class="table-wrap"><table class="table debt-source-table"><thead><tr><th>#</th><th>Debt Name</th><th>Start Balance</th><th>Min. Payment</th><th>Interest Rate</th><th>Credit Limit</th></tr></thead><tbody>' +
       sourceRows.map((row, idx) => '<tr data-debt-source-row><td>' + escapeHtml(String(idx + 1)) + '</td><td><input data-field="name" type="text" value="' + escapeHtml(row.name || '') + '"></td><td><input data-field="startingBalance" type="number" step="0.01" value="' + escapeHtml(String(row.startingBalance ?? '')) + '"></td><td><input data-field="minimumPayment" type="number" step="0.01" value="' + escapeHtml(String(row.minimumPayment ?? '')) + '"></td><td><input data-field="interestRate" type="number" step="0.01" value="' + escapeHtml(String(row.interestRate ?? '')) + '"></td><td><input data-field="creditLimit" type="number" step="0.01" value="' + escapeHtml(row.creditLimit === null || row.creditLimit === undefined ? '' : String(row.creditLimit)) + '"></td></tr>').join('') +
-      '</tbody></table></div><div class="inline-actions"><button class="button button-primary" data-action="debt-save-table">Save Debt Table</button></div></details></div>';
+      '</tbody></table></div><div class="inline-actions"><button type="button" class="button button-primary" data-action="debt-save-table">Save Debt Table</button></div></details></div>';
 
     const messageNode = container.querySelector('#debt-message');
     const setMessage = (type, text) => {

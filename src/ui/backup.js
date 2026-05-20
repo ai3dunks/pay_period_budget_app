@@ -56,7 +56,7 @@ export function renderBackupSection(container) {
     </div>
 
     <div class="settings-actions">
-      <button class="button button-primary" id="backup-export-btn">Export Backup</button>
+      <button type="button" class="button button-primary" id="backup-export-btn">Export Backup</button>
       <label class="button button-secondary" style="cursor:pointer;">
         Select Backup File
         <input type="file" id="backup-file-input" accept=".json" style="display:none">
@@ -210,7 +210,7 @@ function renderPreviewPanel(container, preview, backup, msgEl) {
         </div>
       </div>
       <div class="settings-actions">
-        <button class="button button-primary" id="backup-import-btn">Import Backup</button>
+        <button type="button" class="button button-primary" id="backup-import-btn">Import Backup</button>
       </div>
     </div>
   `;

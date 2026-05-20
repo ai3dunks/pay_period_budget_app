@@ -343,7 +343,7 @@ function renderInsights(insights) {
       '<div><span class="' + severityClass(insight.severity) + '">' + escapeHtml(insight.severity || 'info') + '</span></div>' +
       '<h4>' + escapeHtml(insight.title || 'Insight') + '</h4>' +
       '<p>' + escapeHtml(insight.message || '') + '</p>' +
-      '<button class="button button-secondary button-sm" data-action="reports-open-tab" data-tab-id="' + escapeHtml(insight.actionTarget || 'dashboard') + '">' + escapeHtml(insight.actionLabel || 'Open') + '</button>' +
+      '<button type="button" class="button button-secondary button-sm" data-action="reports-open-tab" data-tab-id="' + escapeHtml(insight.actionTarget || 'dashboard') + '">' + escapeHtml(insight.actionLabel || 'Open') + '</button>' +
       '</article>'
     )).join('') +
     '</div>' +
@@ -361,7 +361,7 @@ function renderComparison(periods, comparisonData) {
     '<div class="reports-filter-bar">' +
     '<label>Period A <select id="reports-compare-a">' + options + '</select></label>' +
     '<label>Period B <select id="reports-compare-b">' + options + '</select></label>' +
-    '<button class="button button-secondary" data-action="reports-compare-run">Compare</button>' +
+    '<button type="button" class="button button-secondary" data-action="reports-compare-run">Compare</button>' +
     '</div>' +
     (deltas
       ? '<div class="table-wrap"><table class="table comparison-table"><thead><tr><th>Metric</th><th>Period A</th><th>Period B</th><th>Delta</th><th>%</th></tr></thead><tbody>' +
@@ -520,9 +520,9 @@ export async function renderReports(container, period, options = {}) {
       '</select></label>' +
       '<label>Custom count <input id="reports-custom-limit" type="number" min="1" max="36" value="' + escapeHtml(String(state.customLimit)) + '"></label>' +
       '<label><input id="reports-include-current" type="checkbox" ' + (state.includeCurrent ? 'checked' : '') + '> Include current open period</label>' +
-      '<button class="button button-secondary" data-action="reports-refresh">Refresh</button>' +
-      (rptFeat('showExportTools') ? '<button class="button button-secondary" data-action="reports-export-json">Export Report JSON</button>' : '') +
-      (rptFeat('showExportTools') ? '<button class="button button-secondary" data-action="reports-export-csv">Export Report CSV</button>' : '') +
+      '<button type="button" class="button button-secondary" data-action="reports-refresh">Refresh</button>' +
+      (rptFeat('showExportTools') ? '<button type="button" class="button button-secondary" data-action="reports-export-json">Export Report JSON</button>' : '') +
+      (rptFeat('showExportTools') ? '<button type="button" class="button button-secondary" data-action="reports-export-csv">Export Report CSV</button>' : '') +
       '</section>' +
       renderSummaryCards(summary.totals || {}) +
       renderOverviewTable(periods) +

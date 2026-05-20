@@ -54,6 +54,7 @@ import {
   isTransferTargetsConfigMissing,
 } from '../utils/transferTargets.js';
 import { detectRuleConflicts } from '../utils/transactionRules.js';
+import { withPreservedRenderState, replaceHtmlPreservingHeight } from '../utils/renderStability.js';
 
 // ── page-level state ────────────────────────────────────────────────────────
 let _rulesMessage = '';
@@ -71,9 +72,21 @@ const ACCOUNT_TAB_LABELS_SETTING_KEY = 'account_tab_labels';
 const TRANSFER_TARGETS_SETTING_KEY = 'transfer_targets';
 
 export async function renderSettings(container) {
+  const alreadyRendered = container.dataset.renderedPage === 'settings';
+  const run = async () => {
+    const result = await renderSettingsInner(container);
+    container.dataset.renderedPage = 'settings';
+    return result;
+  };
+  return alreadyRendered ? withPreservedRenderState(run) : run();
+}
+
+async function renderSettingsInner(container) {
   const body = _renderFrame(container);
   if (!body) return;
-  body.innerHTML = '<section class="card"><p class="empty-state">Loading connection status...</p></section>';
+  if (!body.dataset.loaded) {
+    body.innerHTML = '<section class="card"><p class="empty-state">Loading connection status...</p></section>';
+  }
 
   let status;
   let activeAccounts = [];
@@ -104,9 +117,9 @@ export async function renderSettings(container) {
     }
     _ccSettings = ccSettingsData;
   } catch (err) {
-    body.innerHTML =
+    replaceHtmlPreservingHeight(body,
       '<section class="card"><div class="error-card">Backend not reachable through the local API proxy.' +
-      '<br><small>' + escapeHtml(err.message) + '</small></div></section>';
+      '<br><small>' + escapeHtml(err.message) + '</small></div></section>');
     return;
   }
 
@@ -125,7 +138,7 @@ export async function renderSettings(container) {
         (item.lastSyncedAt
           ? '<small>Last synced: ' + escapeHtml(new Date(item.lastSyncedAt).toLocaleString()) + '</small>'
           : '<small>Not yet synced</small>') +
-        '<button class="button button-danger button-sm" data-action="remove-plaid-item" data-item-id="' + escapeHtml(item.itemId) + '">Remove</button>' +
+        '<button type="button" class="button button-danger button-sm" data-action="remove-plaid-item" data-item-id="' + escapeHtml(item.itemId) + '">Remove</button>' +
         '</div>'
       ).join('')
     : '';
@@ -172,11 +185,11 @@ export async function renderSettings(container) {
         '<td>' + escapeHtml(rule.last_applied_at ? new Date(rule.last_applied_at).toLocaleString() : '-') + '</td>' +
         '<td>' + (conflict ? '<span class="status-needs-review">Conflict</span>' : '<span class="status-reviewed">Clear</span>') + '</td>' +
         '<td class="inline-actions">' +
-        '<button class="button button-secondary button-sm" data-action="rules-edit" data-id="' + escapeHtml(rule.id) + '">Edit</button>' +
-        '<button class="button button-secondary button-sm" data-action="rules-preview-one" data-id="' + escapeHtml(rule.id) + '">Preview</button>' +
-        '<button class="button button-secondary button-sm" data-action="rules-apply-one" data-id="' + escapeHtml(rule.id) + '">Apply</button>' +
-        '<button class="button button-secondary button-sm" data-action="rules-toggle-enabled" data-id="' + escapeHtml(rule.id) + '" data-enabled="' + (rule.enabled ? '1' : '0') + '">' + (rule.enabled ? 'Disable' : 'Enable') + '</button>' +
-        '<button class="button button-secondary button-sm" data-action="rules-delete" data-id="' + escapeHtml(rule.id) + '">Delete</button>' +
+        '<button type="button" class="button button-secondary button-sm" data-action="rules-edit" data-id="' + escapeHtml(rule.id) + '">Edit</button>' +
+        '<button type="button" class="button button-secondary button-sm" data-action="rules-preview-one" data-id="' + escapeHtml(rule.id) + '">Preview</button>' +
+        '<button type="button" class="button button-secondary button-sm" data-action="rules-apply-one" data-id="' + escapeHtml(rule.id) + '">Apply</button>' +
+        '<button type="button" class="button button-secondary button-sm" data-action="rules-toggle-enabled" data-id="' + escapeHtml(rule.id) + '" data-enabled="' + (rule.enabled ? '1' : '0') + '">' + (rule.enabled ? 'Disable' : 'Enable') + '</button>' +
+        '<button type="button" class="button button-secondary button-sm" data-action="rules-delete" data-id="' + escapeHtml(rule.id) + '">Delete</button>' +
         '</td></tr>'
       );
       }).join('')
@@ -193,7 +206,7 @@ export async function renderSettings(container) {
         '<td>' + escapeHtml(account.institutionName || '-') + '</td>' +
         '<td>' + escapeHtml(account.subtype || account.type || '-') + '</td>' +
         '<td class="inline-actions">' +
-        '<button class="button button-secondary button-sm" data-action="remove-plaid-account" data-plaid-account-id="' + escapeHtml(account.plaidAccountId) + '">Remove Account</button>' +
+        '<button type="button" class="button button-secondary button-sm" data-action="remove-plaid-account" data-plaid-account-id="' + escapeHtml(account.plaidAccountId) + '">Remove Account</button>' +
         '</td>' +
         '</tr>'
       );
@@ -211,7 +224,7 @@ export async function renderSettings(container) {
         '<td>' + escapeHtml(account.institutionName || '-') + '</td>' +
         '<td>' + escapeHtml(account.subtype || account.type || '-') + '</td>' +
         '<td class="inline-actions">' +
-        '<button class="button button-secondary button-sm" data-action="restore-plaid-account" data-plaid-account-id="' + escapeHtml(account.plaidAccountId) + '">Restore</button>' +
+        '<button type="button" class="button button-secondary button-sm" data-action="restore-plaid-account" data-plaid-account-id="' + escapeHtml(account.plaidAccountId) + '">Restore</button>' +
         '</td>' +
         '</tr>'
       );
@@ -221,7 +234,7 @@ export async function renderSettings(container) {
   const ruleEditorHtml = renderRuleEditorModalHtml(activeAccounts, { showDraftPreviewButton: false });
   const rulesPreviewHtml = _rulesPreviewState ? renderRulePreviewTableHtml(_rulesPreviewState, { title: _rulesPreviewState.title || 'Rule Preview' }) : '';
 
-  body.innerHTML =
+  replaceHtmlPreservingHeight(body,
     (settingsFeat('showPlaidConnections') ?
       '<section class="card settings-section">' +
       '<div class="card-header"><h3 class="card-title">Bank Connections</h3><p class="card-description">Connect your bank and sync transactions.</p></div>' +
@@ -237,9 +250,9 @@ export async function renderSettings(container) {
       '<p class="card-description">Restoring an account re-allows it for future syncs. Run Sync Transactions after restoring.</p>' +
       '</details>' +
       '<div class="settings-actions">' +
-      '<button class="button button-primary" data-action="connect-plaid">Connect Bank</button>' +
-      (connected ? '<button class="button button-secondary" data-action="sync-transactions">Sync Transactions</button>' : '') +
-      '<button class="button button-secondary" data-action="cleanup-removed-plaid">Clean removed bank data</button>' +
+      '<button type="button" class="button button-primary" data-action="connect-plaid">Connect Bank</button>' +
+      (connected ? '<button type="button" class="button button-secondary" data-action="sync-transactions">Sync Transactions</button>' : '') +
+      '<button type="button" class="button button-secondary" data-action="cleanup-removed-plaid">Clean removed bank data</button>' +
       '</div>' +
       '<div id="settings-message" class="settings-message" aria-live="polite"></div>' +
       '</section>' : '') +
@@ -250,8 +263,8 @@ export async function renderSettings(container) {
       (_accountTabNamesMessage ? '<p class="settings-message ' + (_accountTabNamesMessageType === 'error' ? 'error' : 'success') + '">' + escapeHtml(_accountTabNamesMessage) + '</p>' : '') +
       '<div class="table-wrap"><table class="table"><thead><tr><th>Default tab name</th><th>Custom tab name</th><th>Current tab label</th></tr></thead><tbody>' + accountLabelRows + '</tbody></table></div>' +
       '<div class="settings-actions">' +
-      '<button class="button button-primary" data-action="save-account-tab-names">Save Tab Names</button>' +
-      '<button class="button button-secondary" data-action="reset-account-tab-names">Reset to Defaults</button>' +
+      '<button type="button" class="button button-primary" data-action="save-account-tab-names">Save Tab Names</button>' +
+      '<button type="button" class="button button-secondary" data-action="reset-account-tab-names">Reset to Defaults</button>' +
       '</div>' +
       '</section>' : '') +
 
@@ -260,7 +273,7 @@ export async function renderSettings(container) {
       '<div class="card-header"><h3 class="card-title">Rules</h3><p class="card-description">Manage saved transaction classification rules.</p></div>' +
       (hasRuleConflicts ? '<div class="dashboard-alert warning"><strong>Some rules overlap.</strong><div>Priority decides which rule wins.</div></div>' : '') +
       (_rulesMessage ? '<p class="settings-message ' + (_rulesMessageType === 'error' ? 'error' : 'success') + '">' + escapeHtml(_rulesMessage) + '</p>' : '') +
-      '<div class="settings-actions"><button class="button button-secondary" data-action="rules-add">Add Rule</button></div>' +
+      '<div class="settings-actions"><button type="button" class="button button-secondary" data-action="rules-add">Add Rule</button></div>' +
       '<div class="table-wrap"><table class="table"><thead><tr><th>Status</th><th>Rule Name</th><th>Match</th><th>Applies</th><th>Confidence</th><th>Last Used</th><th>Conflict</th><th>Actions</th></tr></thead>' +
       '<tbody>' + rulesRows + '</tbody></table></div>' +
       '</section>' : '') +
@@ -269,10 +282,10 @@ export async function renderSettings(container) {
       '<section class="card settings-section">' +
       '<div class="card-header"><h3 class="card-title">Privacy / Export / Reset</h3><p class="card-description">Quick actions for data checks, master lists, and safety backups.</p></div>' +
       '<div class="settings-actions">' +
-      '<button class="button button-secondary" data-action="data-tools-open-master-lists">Open Master Lists</button>' +
-      '<button class="button button-secondary" data-action="data-tools-run-health">Run Data Health Check</button>' +
-      '<button class="button button-secondary" data-action="data-tools-cleanup-removed-plaid">Clean removed bank data</button>' +
-      '<button class="button button-secondary" data-action="data-tools-export-backup">Export Backup</button>' +
+      '<button type="button" class="button button-secondary" data-action="data-tools-open-master-lists">Open Master Lists</button>' +
+      '<button type="button" class="button button-secondary" data-action="data-tools-run-health">Run Data Health Check</button>' +
+      '<button type="button" class="button button-secondary" data-action="data-tools-cleanup-removed-plaid">Clean removed bank data</button>' +
+      '<button type="button" class="button button-secondary" data-action="data-tools-export-backup">Export Backup</button>' +
       '</div></section>' : '') +
 
     (settingsFeat('showSafeMoney') ?
@@ -282,7 +295,7 @@ export async function renderSettings(container) {
       '<label class="form-field"><span>Safety buffer</span><input id="safe-money-buffer" type="number" step="0.01" value="' + escapeHtml(String(safeMoneyBuffer)) + '"></label>' +
       '<label class="form-field checkbox-field"><span><input id="safe-money-pending" type="checkbox"' + (safeMoneyIncludePending ? ' checked' : '') + '> Include pending transactions in Safe Money</span></label>' +
       '</div>' +
-      '<div class="settings-actions"><button class="button button-primary" data-action="safe-money-save">Save Safe Money Settings</button></div>' +
+      '<div class="settings-actions"><button type="button" class="button button-primary" data-action="safe-money-save">Save Safe Money Settings</button></div>' +
       '<div id="safe-money-message" class="settings-message" aria-live="polite"></div>' +
       '</section>' : '') +
 
@@ -290,13 +303,14 @@ export async function renderSettings(container) {
 
     '<section class="card settings-section" id="command-center-recovery-section">' +
     '<div class="card-header"><h3 class="card-title">Feature Toggles</h3><p class="card-description">Restore defaults if page visibility was changed by saved settings.</p></div>' +
-    '<div class="settings-actions"><button class="button button-secondary" data-action="cc-reset-all">Reset Command Center Defaults</button></div>' +
+    '<div class="settings-actions"><button type="button" class="button button-secondary" data-action="cc-reset-all">Reset Command Center Defaults</button></div>' +
     '</section>' +
 
     (settingsFeat('showCommandCenter') ? _renderCommandCenterSection(_ccSettings) : '') +
 
     ruleEditorHtml +
-    rulesPreviewHtml;
+    rulesPreviewHtml);
+  body.dataset.loaded = '1';
 
   // Per-render listeners (safe-money only — Plaid actions handled globally)
   body.querySelector('[data-action="safe-money-save"]')?.addEventListener('click', async () => {
@@ -918,6 +932,8 @@ export function handleRuleEditorInput(e) {
 // ── Internal helpers ────────────────────────────────────────────────────────
 
 function _renderFrame(container) {
+  const existingBody = container.querySelector('#page-body');
+  if (existingBody) return existingBody;
   container.innerHTML =
     '<header class="page-header">' +
     '<div class="page-header-main"><h2 class="page-title">Settings</h2><p class="page-description">A command center for banks, accounts, rules, lists, health, and privacy tools.</p></div>' +
@@ -983,9 +999,9 @@ function _renderTransferTargetsSection(targets, editingTarget) {
       '<td>' + escapeHtml(target.destinationAccountId || '-') + '</td>' +
       '<td>' + (target.active ? '<span class="status-reviewed">Enabled</span>' : '<span class="status-needs-review">Disabled</span>') + '</td>' +
       '<td class="inline-actions">' +
-      '<button class="button button-secondary button-sm" data-action="transfer-target-edit" data-target-id="' + escapeHtml(target.id) + '">Edit</button>' +
-      '<button class="button button-secondary button-sm" data-action="transfer-target-toggle" data-target-id="' + escapeHtml(target.id) + '">' + (target.active ? 'Disable' : 'Enable') + '</button>' +
-      '<button class="button button-danger button-sm" data-action="transfer-target-delete" data-target-id="' + escapeHtml(target.id) + '">Delete</button>' +
+      '<button type="button" class="button button-secondary button-sm" data-action="transfer-target-edit" data-target-id="' + escapeHtml(target.id) + '">Edit</button>' +
+      '<button type="button" class="button button-secondary button-sm" data-action="transfer-target-toggle" data-target-id="' + escapeHtml(target.id) + '">' + (target.active ? 'Disable' : 'Enable') + '</button>' +
+      '<button type="button" class="button button-danger button-sm" data-action="transfer-target-delete" data-target-id="' + escapeHtml(target.id) + '">Delete</button>' +
       '</td>' +
       '</tr>'
     )).join('')
@@ -1018,9 +1034,9 @@ function _renderTransferTargetsSection(targets, editingTarget) {
     '<label class="form-field" style="grid-column:1 / -1;"><span>Notes</span><textarea id="transfer-target-notes" rows="3">' + escapeHtml(editingTarget.notes || '') + '</textarea></label>' +
     '</div>' +
     '<div class="settings-actions">' +
-    '<button class="button button-primary" data-action="transfer-target-save">Save Transfer Target</button>' +
-    '<button class="button button-secondary" data-action="transfer-target-add-new">Add New</button>' +
-    (editingTarget.id ? '<button class="button button-secondary" data-action="transfer-target-cancel">Cancel Edit</button>' : '') +
+    '<button type="button" class="button button-primary" data-action="transfer-target-save">Save Transfer Target</button>' +
+    '<button type="button" class="button button-secondary" data-action="transfer-target-add-new">Add New</button>' +
+    (editingTarget.id ? '<button type="button" class="button button-secondary" data-action="transfer-target-cancel">Cancel Edit</button>' : '') +
     '</div>' +
     '</section>'
   );
@@ -1103,7 +1119,7 @@ function _renderCommandCenterSection(ccSettings) {
           '<span class="cc-page-pill-label">' + (pageIsEnabled ? 'On' : 'Off') + '</span>' +
           '</label>'
         : '') +
-      '<button class="button button-ghost button-xs" data-action="cc-reset-page" data-page="' + escapeHtml(pageKey) + '">Reset</button>' +
+      '<button type="button" class="button button-ghost button-xs" data-action="cc-reset-page" data-page="' + escapeHtml(pageKey) + '">Reset</button>' +
       '</div>' +
       '</div>' +
       (pageKey === 'settings'
@@ -1116,7 +1132,7 @@ function _renderCommandCenterSection(ccSettings) {
 
   const presetButtonsHtml = Object.keys(PRESETS).map((key) => {
     const p = PRESETS[key];
-    return '<button class="button button-secondary button-sm" data-action="cc-preset" data-preset="' + escapeHtml(key) + '" title="' + escapeHtml(p.description) + '">' + escapeHtml(p.label) + '</button>';
+    return '<button type="button" class="button button-secondary button-sm" data-action="cc-preset" data-preset="' + escapeHtml(key) + '" title="' + escapeHtml(p.description) + '">' + escapeHtml(p.label) + '</button>';
   }).join('');
 
   const messageHtml = _ccMessage
@@ -1132,7 +1148,7 @@ function _renderCommandCenterSection(ccSettings) {
     '<div class="cc-presets-bar">' +
     '<span class="cc-presets-label">Presets:</span>' +
     presetButtonsHtml +
-    '<button class="button button-ghost button-sm" data-action="cc-reset-all">Reset All Defaults</button>' +
+    '<button type="button" class="button button-ghost button-sm" data-action="cc-reset-all">Reset All Defaults</button>' +
     '</div>' +
     '<div class="cc-page-groups">' + pageGroupsHtml + '</div>' +
     messageHtml +

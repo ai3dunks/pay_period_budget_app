@@ -177,8 +177,8 @@ function renderReviewQueue(reviewStats, hasRulesEngine) {
     (hasRulesEngine ? '<div class="action-row"><span>Rules ready to apply</span><strong class="text-muted">' + escapeHtml(String(reviewStats.rulesAvailableButNotApplied)) + '</strong></div>' : '') +
     '</div>' +
     '<div class="dashboard-secondary-actions">' +
-    '<button class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="transactions">Review Transactions</button>' +
-    (hasRulesEngine ? '<button class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="settings">Apply Rules</button>' : '') +
+    '<button type="button" class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="transactions">Review Transactions</button>' +
+    (hasRulesEngine ? '<button type="button" class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="settings">Apply Rules</button>' : '') +
     '</div>' +
     '</article>'
   );
@@ -204,7 +204,7 @@ function renderTransferActions(summary) {
     }).join('') +
     '</div>' +
     (Number(summary.transfers.discover || 0) < 0 ? '<div class="dashboard-alert warning">Discover transfer is short.</div>' : '') +
-    '<div class="dashboard-secondary-actions"><button class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="transfers">Go to Transfers</button></div>' +
+    '<div class="dashboard-secondary-actions"><button type="button" class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="transfers">Go to Transfers</button></div>' +
     '</article>'
   );
 }
@@ -214,7 +214,7 @@ function renderCashFlowForecastCard(forecast) {
     return (
       '<article class="card command-card compact">' +
       '<div class="card-header"><h3 class="card-title">Cash Flow Forecast</h3><p class="card-description">Preview unavailable for this period.</p></div>' +
-      '<div class="dashboard-secondary-actions"><button class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="cash-flow">View Forecast</button></div>' +
+      '<div class="dashboard-secondary-actions"><button type="button" class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="cash-flow">View Forecast</button></div>' +
       '</article>'
     );
   }
@@ -231,7 +231,7 @@ function renderCashFlowForecastCard(forecast) {
     '<div class="action-row"><span>Lowest Projected Cash</span><strong class="' + (Number(forecast.summary.lowestProjectedCashBalance || 0) < 0 ? 'text-danger' : 'text-warning') + '">' + escapeHtml(formatMoney(forecast.summary.lowestProjectedCashBalance || 0)) + '</strong></div>' +
     '<div class="action-row"><span>Next Cash Risk Date</span><strong class="' + (forecast.summary.nextCashRiskDate ? 'text-danger' : 'text-good') + '">' + escapeHtml(nextRisk) + '</strong></div>' +
     '</div>' +
-    '<div class="dashboard-secondary-actions"><button class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="cash-flow">View Forecast</button></div>' +
+    '<div class="dashboard-secondary-actions"><button type="button" class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="cash-flow">View Forecast</button></div>' +
     '</article>'
   );
 }
@@ -262,7 +262,7 @@ function renderBillsAttention(summary) {
     (rows.length
       ? '<div class="table-wrap"><table class="table table-compact"><thead><tr><th>Bill</th><th>Due</th><th>Amount</th><th>Status</th></tr></thead><tbody>' + rows.join('') + '</tbody></table></div>'
       : '<p class="empty-state">No unpaid recurring bills left.</p>') +
-    '<div class="dashboard-secondary-actions"><button class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="recurring-bills">Go to Recurring Bills</button></div>' +
+    '<div class="dashboard-secondary-actions"><button type="button" class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="recurring-bills">Go to Recurring Bills</button></div>' +
     '</article>'
   );
 }
@@ -275,7 +275,7 @@ function renderSpendingWatchlists(summary) {
       '<article class="card command-card compact">' +
       '<div class="card-header"><h3 class="card-title">Spending Watchlists / Over Budget</h3><p class="card-description">Add budgets in Master Lists &gt; Expense List.</p></div>' +
       '<p class="empty-state">Add budgets in Master Lists &gt; Expense List.</p>' +
-      '<div class="dashboard-secondary-actions"><button class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="expenses">Go to Expenses</button></div>' +
+      '<div class="dashboard-secondary-actions"><button type="button" class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="expenses">Go to Expenses</button></div>' +
       '</article>'
     );
   }
@@ -315,7 +315,7 @@ function renderSpendingWatchlists(summary) {
       );
     }).join('') +
     '</tbody></table></div>' +
-    '<div class="dashboard-secondary-actions"><button class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="expenses">Go to Expenses</button></div>' +
+    '<div class="dashboard-secondary-actions"><button type="button" class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="expenses">Go to Expenses</button></div>' +
     '</article>'
   );
 }
@@ -335,7 +335,7 @@ function renderBudgetSplitSummary(splitSummary) {
     )).join('') +
     '<div class="metric-card compact"><div class="metric-label">Total Remaining</div><div class="metric-value text-' + (Number(totals.remaining || 0) >= 0 ? 'good' : 'danger') + '">' + escapeHtml(formatMoney(totals.remaining || 0)) + '</div></div>' +
     '</div>' +
-    '<div class="dashboard-secondary-actions"><button class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="paycheck-planner">Open Paycheck Planner</button></div>' +
+    '<div class="dashboard-secondary-actions"><button type="button" class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="paycheck-planner">Open Paycheck Planner</button></div>' +
     '</article>'
   );
 }
@@ -386,7 +386,7 @@ function renderEnvelopeSummary({ splitSummary, bucketSummary }) {
     '<div class="metric-card compact"><div class="metric-label">Total Unassigned Remaining</div><div class="metric-value text-' + (totalUnassignedRemaining < 0 ? 'danger' : 'warning') + '">' + escapeHtml(formatMoney(totalUnassignedRemaining)) + '</div></div>' +
     '</div>' +
     '<div class="action-list">' + warningLines.map((line) => '<div class="action-row"><span>' + escapeHtml(line) + '</span></div>').join('') + '</div>' +
-    '<div class="dashboard-secondary-actions"><button class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="paycheck-planner">Manage Buckets</button></div>' +
+    '<div class="dashboard-secondary-actions"><button type="button" class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="paycheck-planner">Manage Buckets</button></div>' +
     '</article>'
   );
 }
@@ -502,7 +502,7 @@ function renderNextBestActions(actions) {
     actions.map((action) => (
       '<div class="action-row">' +
       '<div><strong>' + escapeHtml(action.label) + '</strong><div class="card-description">' + escapeHtml(action.reason) + '</div></div>' +
-      '<button class="button button-secondary button-sm dashboard-cta" data-action="dashboard-open-tab" data-tab-id="' + escapeHtml(action.destination) + '">' + escapeHtml(action.buttonText) + '</button>' +
+      '<button type="button" class="button button-secondary button-sm dashboard-cta" data-action="dashboard-open-tab" data-tab-id="' + escapeHtml(action.destination) + '">' + escapeHtml(action.buttonText) + '</button>' +
       '</div>'
     )).join('') +
     '</div>' +
@@ -520,7 +520,7 @@ function renderReportsPreview(reportsSummary, options = {}) {
       '<article class="card command-card compact">' +
       '<div class="card-header"><h3 class="card-title">Reports Preview</h3><p class="card-description">Trend direction for the latest periods.</p></div>' +
       '<p class="empty-state">Not enough report history yet.</p>' +
-      '<div class="dashboard-secondary-actions"><button class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="reports">View Reports</button></div>' +
+      '<div class="dashboard-secondary-actions"><button type="button" class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="reports">View Reports</button></div>' +
       '</article>'
     );
   }
@@ -544,7 +544,7 @@ function renderReportsPreview(reportsSummary, options = {}) {
     (options.showSafeToSpendCard === false ? '' : line('Safe to Spend', safeDelta)) +
     line('Recurring bills', billsDelta) +
     '</div>' +
-    '<div class="dashboard-secondary-actions"><button class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="reports">View Reports</button></div>' +
+    '<div class="dashboard-secondary-actions"><button type="button" class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="reports">View Reports</button></div>' +
     '</article>'
   );
 }
@@ -654,7 +654,7 @@ function renderBudgetPlanCard(splitSummary) {
     '<div class="budget-plan-table"><div class="budget-plan-heading"><span>Group</span><span>Allotted</span><span>Actual</span><span>Remaining</span></div>' +
     body +
     '</div>' +
-    '<div class="dashboard-secondary-actions"><button class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="paycheck-planner">Edit Plan</button></div>' +
+    '<div class="dashboard-secondary-actions"><button type="button" class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="paycheck-planner">Edit Plan</button></div>' +
     '</article>'
   );
 }
@@ -671,7 +671,7 @@ function renderCashFlowCommandCard({ period, summary, forecast }) {
     '<div class="action-row"><span>Expected spending left</span><strong>' + escapeHtml(formatMoney(Math.max(0, Number(summary.expenses.remaining || 0)))) + '</strong></div>' +
     '<div class="action-row"><span>Projected end balance</span><strong class="text-' + tone + '">' + escapeHtml(formatMoney(projectedAmount)) + '</strong></div>' +
     '</div>' +
-    '<div class="dashboard-secondary-actions"><button class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="cash-flow">Open Forecast</button></div>' +
+    '<div class="dashboard-secondary-actions"><button type="button" class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="cash-flow">Open Forecast</button></div>' +
     '</article>'
   );
 }
@@ -687,7 +687,7 @@ function renderReviewNeededCard(reviewItems) {
     '<article class="card command-card compact scroll-card">' +
     '<div class="card-header"><h3 class="card-title">Review Needed</h3><p class="card-description">' + escapeHtml(String(reviewItems.length)) + ' transaction' + (reviewItems.length === 1 ? '' : 's') + ' need attention.</p></div>' +
     '<div class="scroll-card-body">' + (rows || '<p class="empty-state">No review needed. Everything is caught up.</p>') + '</div>' +
-    '<div class="dashboard-secondary-actions"><button class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="transactions">Open Transactions</button></div>' +
+    '<div class="dashboard-secondary-actions"><button type="button" class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="transactions">Open Transactions</button></div>' +
     '</article>'
   );
 }
@@ -707,7 +707,7 @@ function renderUpcomingBillsCard(summary) {
     '<article class="card command-card compact scroll-card">' +
     '<div class="card-header"><h3 class="card-title">Upcoming Bills</h3><p class="card-description">Next unpaid bills in this pay period.</p></div>' +
     '<div class="scroll-card-body">' + (rows || '<p class="empty-state">No bills due in this period.</p>') + '</div>' +
-    '<div class="dashboard-secondary-actions"><button class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="recurring-bills">Open Bills</button></div>' +
+    '<div class="dashboard-secondary-actions"><button type="button" class="button button-secondary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="recurring-bills">Open Bills</button></div>' +
     '</article>'
   );
 }
@@ -719,7 +719,7 @@ function renderNextMoneyMoveCard(actions) {
     '<p class="metric-label">Next Money Move</p>' +
     '<h3>' + escapeHtml(action.label) + '</h3>' +
     '<p>' + escapeHtml(action.reason) + '</p>' +
-    '<button class="button button-primary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="' + escapeHtml(action.destination) + '">' + escapeHtml(action.buttonText) + '</button>' +
+    '<button type="button" class="button button-primary dashboard-cta" data-action="dashboard-open-tab" data-tab-id="' + escapeHtml(action.destination) + '">' + escapeHtml(action.buttonText) + '</button>' +
     '</article>'
   );
 }

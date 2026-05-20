@@ -80,9 +80,9 @@ export function renderReviewModalHtml(transaction, draft, categoryOptions) {
     '</div>' +
     '<div id="review-error" class="settings-message error"></div>' +
     '<div class="filter-actions">' +
-    '<button class="button button-secondary" data-action="close-review-modal">Close</button>' +
-    '<button class="button button-secondary" data-action="create-rule-from-transaction" data-id="' + escapeHtml(transaction.id) + '">Create rule from this transaction</button>' +
-    '<button class="button button-primary" data-action="save-transaction-review" data-id="' + escapeHtml(transaction.id) + '">Save Review</button>' +
+    '<button type="button" class="button button-secondary" data-action="close-review-modal">Close</button>' +
+    '<button type="button" class="button button-secondary" data-action="create-rule-from-transaction" data-id="' + escapeHtml(transaction.id) + '">Create rule from this transaction</button>' +
+    '<button type="button" class="button button-primary" data-action="save-transaction-review" data-id="' + escapeHtml(transaction.id) + '">Save Review</button>' +
     '</div>' +
     '</section>'
   );

@@ -7,6 +7,7 @@ import { buildPayPeriodSummary } from '../utils/payPeriodSummary.js';
 import { fetchCloseoutRecord } from '../utils/closeoutClient.js';
 import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
 import { getTransactionRowsForPeriod } from '../api/transactionsApi.js';
+import { withPreservedRenderState } from '../utils/renderStability.js';
 
 const BACKEND = '';
 const _billFilters = {
@@ -197,6 +198,16 @@ function renderBillMatchDetails(status) {
 }
 
 export async function renderRecurringBills(container, period, periodLabel) {
+  const alreadyRendered = container.dataset.renderedPage === 'recurring-bills';
+  const run = async () => {
+    const result = await renderRecurringBillsInner(container, period, periodLabel);
+    container.dataset.renderedPage = 'recurring-bills';
+    return result;
+  };
+  return alreadyRendered ? withPreservedRenderState(run) : run();
+}
+
+async function renderRecurringBillsInner(container, period, periodLabel) {
   const renderContainer = container?.closest?.('#page-content') || container;
   renderContainer.innerHTML = '';
 
@@ -288,7 +299,7 @@ export async function renderRecurringBills(container, period, periodLabel) {
     tools.className = 'budget-split-card';
     tools.innerHTML =
       '<div>' +
-      '<button class="button" id="auto-detect-btn">Re-run auto-paid detection</button>' +
+      '<button type="button" class="button" id="auto-detect-btn">Re-run auto-paid detection</button>' +
       '<div id="auto-detect-note" class="info-message"></div>' +
       '<div id="auto-detect-error" class="error-message"></div>' +
       '</div>';
@@ -356,7 +367,7 @@ export async function renderRecurringBills(container, period, periodLabel) {
           } else if (statusLabel === 'Manual' || isManual) {
             matchStatusHtml =
               '<button type="button" class="status-pill-button transaction-popup-trigger" data-bill-id="' + escapeHtml(bill.id) + '"><span class="badge-manual">Manual</span></button>' +
-              '<button class="button button-secondary button-sm clear-override-btn" data-bill-id="' + escapeHtml(bill.id) + '">Clear manual override</button>';
+              '<button type="button" class="button button-secondary button-sm clear-override-btn" data-bill-id="' + escapeHtml(bill.id) + '">Clear manual override</button>';
           } else if (statusLabel === 'Possible match') {
             matchStatusHtml =
               '<span class="badge-possible">Possible match</span>' +
@@ -376,7 +387,7 @@ export async function renderRecurringBills(container, period, periodLabel) {
           '<td>' + (bill.autopay ? '<span class="badge-autopay">Yes</span>' : '-') + '</td>' +
           '<td>' + (isPaid ? '<span class="badge-good">Paid</span>' : matchStatusHtml) + '</td>' +
           '<td class="inline-actions"><label class="bill-check-action"><input type="checkbox" class="bill-paid-toggle" data-bill-id="' + escapeHtml(bill.id) + '" ' + (isPaid ? 'checked' : '') + ' /> Paid</label>' +
-          (isManual ? '<button class="button button-secondary button-sm clear-override-btn" data-bill-id="' + escapeHtml(bill.id) + '">Clear</button>' : '') +
+          (isManual ? '<button type="button" class="button button-secondary button-sm clear-override-btn" data-bill-id="' + escapeHtml(bill.id) + '">Clear</button>' : '') +
           '</td>';
         tbody.appendChild(row);
       });

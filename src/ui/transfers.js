@@ -7,6 +7,7 @@ import {
 import { buildPayPeriodSummary } from '../utils/payPeriodSummary.js';
 import { loadBudgetContext } from '../utils/loadBudgetContext.js';
 import { fetchCloseoutRecord } from '../utils/closeoutClient.js';
+import { withPreservedRenderState } from '../utils/renderStability.js';
 import {
   getTransferConfirmations,
   createTransferConfirmation,
@@ -145,8 +146,8 @@ function renderTargetRows(rows, confirmations, options = {}) {
       const resetButtonId = 'reset-' + escapeHtml(row.id);
 
       const actionButtons = isConfirmed
-        ? '<button class="button button-secondary button-sm" id="' + resetButtonId + '" data-action="reset-transfer-confirmation" data-target="' + escapeHtml(row.id) + '">Reset</button>'
-        : '<button class="button button-primary button-sm" id="' + confirmButtonId + '" data-action="confirm-transfer" data-target="' + escapeHtml(row.id) + '" data-amount="' + escapeHtml(String(transferNeededAmount)) + '">Confirm</button>';
+        ? '<button type="button" class="button button-secondary button-sm" id="' + resetButtonId + '" data-action="reset-transfer-confirmation" data-target="' + escapeHtml(row.id) + '">Reset</button>'
+        : '<button type="button" class="button button-primary button-sm" id="' + confirmButtonId + '" data-action="confirm-transfer" data-target="' + escapeHtml(row.id) + '" data-amount="' + escapeHtml(String(transferNeededAmount)) + '">Confirm</button>';
 
       return (
         '<tr>' +
@@ -158,7 +159,7 @@ function renderTargetRows(rows, confirmations, options = {}) {
         '<td>' + escapeHtml(formatCurrencyValue(displayTransferAmount)) + '</td>' +
         '<td>' + statusBadge + '</td>' +
         (showTransferMatching ? '<td>' + actionButtons + '</td>' : '') +
-        (showAdvancedTransferMath ? '<td><button class="button button-secondary button-sm" data-action="transfer-toggle-details" data-target="' + escapeHtml(row.id) + '">Details</button></td>' : '') +
+        (showAdvancedTransferMath ? '<td><button type="button" class="button button-secondary button-sm" data-action="transfer-toggle-details" data-target="' + escapeHtml(row.id) + '">Details</button></td>' : '') +
         '</tr>' +
         (showAdvancedTransferMath
           ? '<tr class="transfer-detail-row" data-detail-row="' + escapeHtml(row.id) + '" hidden>' +
@@ -217,6 +218,16 @@ function renderWantsTable(rows) {
 
 
 export async function renderTransfers(container, period, periodLabel) {
+  const alreadyRendered = container.dataset.renderedPage === 'transfers';
+  const run = async () => {
+    const result = await renderTransfersInner(container, period, periodLabel);
+    container.dataset.renderedPage = 'transfers';
+    return result;
+  };
+  return alreadyRendered ? withPreservedRenderState(run) : run();
+}
+
+async function renderTransfersInner(container, period, periodLabel) {
   container.innerHTML = '';
 
   const page = document.createElement('div');

@@ -134,7 +134,7 @@ function renderIssues(issues = []) {
           '<td>' + escapeHtml(sectionTitle(issue.section)) + '</td>' +
           '<td><strong>' + escapeHtml(issue.title || 'Issue') + '</strong><div class="metric-subtext">' + escapeHtml(issue.message || '') + '</div></td>' +
           '<td>' + escapeHtml(String(issue.count || 0)) + '</td>' +
-          '<td><button class="button button-secondary button-sm" data-action="data-health-open" data-target="' + escapeHtml(mapActionTargetToTab(issue.actionTarget)) + '">' + escapeHtml(issue.actionLabel || 'Open') + '</button></td>' +
+          '<td><button type="button" class="button button-secondary button-sm" data-action="data-health-open" data-target="' + escapeHtml(mapActionTargetToTab(issue.actionTarget)) + '">' + escapeHtml(issue.actionLabel || 'Open') + '</button></td>' +
           '</tr>'
         )).join('') +
         '</tbody></table></div>'

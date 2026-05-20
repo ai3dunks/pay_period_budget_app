@@ -24,8 +24,16 @@ import { normalizeReviewDraft } from './transactionReviewModal.js';
 import { emitAppEvent } from '../app/events.js';
 import { timeAsync, logRenderTime } from '../utils/performance.js';
 import { getAccounts, getPlaidStatus } from '../api/plaidApi.js';
-import { loadCommandCenterSettings, isFeatureEnabled } from '../utils/commandCenter.js';
-import { createRuleFromTransaction, getRuleMatchValueFromTransaction, previewRuleMatches } from '../utils/transactionRules.js';
+import { loadCommandCenterSettings, isFeatureEnabled, updateCommandCenterFeature } from '../utils/commandCenter.js';
+import { captureRenderState, restoreRenderState } from '../utils/renderStability.js';
+import {
+  createRuleFromTransaction,
+  evaluateRulePreview,
+  getRuleMatchValueFromTransaction,
+  normalizeRuleComparableText,
+  transactionIsEligibleForRuleApply,
+  transactionTextMatchesRule,
+} from '../utils/transactionRules.js';
 
 const TRANSACTION_TYPES_FOR_FILTER = ['Income', 'Expense', 'Bills', 'Wants', 'Transfer', 'Debt Payment', 'Ignore'];
 const PAGE_SIZE_OPTIONS = [50, 100, 250, 500];
@@ -48,7 +56,7 @@ let _filters = {
   exclusiveEndDate: '',
   type: '',
   category: '',
-  reviewed: '',
+  reviewed: 'false',
   pending: '',
   showIgnored: false,
   sort: 'date_desc',
@@ -186,7 +194,8 @@ function _getRuleSuggestion(row) {
     .filter((rule) => String(rule.confidence_mode || 'suggest') === 'suggest')
     .sort((a, b) => Number(a.priority ?? 100) - Number(b.priority ?? 100));
   for (const rule of rules) {
-    const preview = previewRuleMatches(rule, [row]);
+    const previewResult = evaluateRulePreview(rule, [row]);
+    const preview = previewResult.preview || [];
     if (preview.length) return { rule, preview: preview[0] };
   }
   return null;
@@ -235,20 +244,114 @@ function _buildReviewRulePayload(row) {
   payload.apply_reviewed = !!document.getElementById('review-rule-apply-reviewed')?.checked;
   payload.apply_to_pending = false;
   payload.apply_to_unreviewed_only = true;
+  payload.created_from_transaction_id = row?.id || payload.created_from_transaction_id || '';
   return payload;
+}
+
+function _formatRulePreviewMessage(result) {
+  const matched = Number(result?.matchedCount || 0);
+  const reviewed = Number(result?.reviewedMatchedCount || 0);
+  const pending = Number(result?.pendingMatchedCount || 0);
+  const updated = Number(result?.applyableCount ?? result?.updatedCount ?? 0);
+  const skippedReviewed = Number(result?.skippedReviewedCount || 0);
+  const skippedPending = Number(result?.skippedPendingCount || 0);
+  let message =
+    'Matched ' + String(matched) + ' transaction(s): ' +
+    String(result?.unreviewedMatchedCount || 0) + ' unreviewed, ' +
+    String(reviewed) + ' reviewed, and ' +
+    String(pending) + ' pending. ' +
+    String(updated) + ' can be updated.';
+
+  if (matched > 0 && updated === 0 && reviewed > 0 && skippedReviewed >= reviewed) {
+    message += ' Matches are already reviewed.';
+  } else if (matched > 0 && updated === 0 && pending > 0 && skippedPending >= pending) {
+    message += ' Pending transactions are skipped by rule settings.';
+  } else if (skippedReviewed || skippedPending) {
+    message += ' Skipped ' + String(skippedReviewed) + ' reviewed and ' + String(skippedPending) + ' pending.';
+  }
+
+  if (result?.sourceTransactionExcluded) message += ' Source transaction excluded.';
+  if (matched === 0) {
+    const period = getActivePeriod();
+    const periodLabel = period?.startDate && period?.exclusiveEndDate
+      ? period.startDate + ' - ' + period.exclusiveEndDate
+      : 'the selected period';
+    message += ' No matching transactions found in ' + periodLabel + '. Checked merchant/name/raw description for "' + String(result?.matchValue || document.getElementById('review-rule-match-value')?.value || '').trim() + '".';
+  }
+  return message;
 }
 
 async function _previewReviewRuleLocally(payload, sourceTransactionId) {
   const periodRows = await _getPeriodRowsForRulePreview();
-  const matches = previewRuleMatches(payload, periodRows)
-    .filter((match) => String(match.transactionId || match.transaction?.id || '') !== String(sourceTransactionId || ''));
-  return {
-    matchedCount: matches.length,
-    unreviewedMatchedCount: matches.filter((match) => !match.reviewed && !match.transaction?.reviewed).length,
-    reviewedMatchedCount: matches.filter((match) => !!(match.reviewed || match.transaction?.reviewed)).length,
-    pendingMatchedCount: matches.filter((match) => !!(match.pending || match.transaction?.pending)).length,
-    preview: matches,
+  return evaluateRulePreview(payload, periodRows, { excludeTransactionId: sourceTransactionId });
+}
+
+function _getSafeRuleDebugRows(rows, payload, sourceTransactionId) {
+  const visibleWalmartRows = (rows || []).filter((row) => {
+    const comparable = normalizeRuleComparableText([
+      row?.merchant_name,
+      row?.name,
+      row?.description,
+    ].join(' '));
+    return comparable.includes('walmart');
+  });
+  return visibleWalmartRows.slice(0, 10).map((row) => {
+    const textMatches = transactionTextMatchesRule(row, payload);
+    const eligibility = transactionIsEligibleForRuleApply(row, payload, { excludeTransactionId: sourceTransactionId });
+    return {
+      id: row?.id,
+      date: row?.date,
+      merchant_name: row?.merchant_name || '',
+      name: row?.name || '',
+      amount: row?.amount,
+      pending: !!row?.pending,
+      reviewed: !!row?.reviewed,
+      textMatches,
+      eligible: eligibility.eligible,
+      skipReason: textMatches ? eligibility.skipReason : 'text',
+      isSource: String(row?.id || '') === String(sourceTransactionId || ''),
+    };
+  });
+}
+
+async function _logRulePreviewDebug({ sourceRow, payload, backendResult = null, backendError = null }) {
+  const period = getActivePeriod();
+  let periodRows = _rows;
+  try {
+    periodRows = await _getPeriodRowsForRulePreview();
+  } catch (_err) {
+    periodRows = _rows;
+  }
+  const debug = {
+    sourceTransactionId: sourceRow?.id || '',
+    sourceMerchantName: sourceRow?.merchant_name || '',
+    sourceName: sourceRow?.name || '',
+    sourceRawDescription: sourceRow?.description || '',
+    match_type: payload?.match_type || '',
+    match_value: payload?.match_value || '',
+    periodId: period?.id || '',
+    periodStartDate: period?.startDate || '',
+    periodExclusiveEndDate: period?.exclusiveEndDate || '',
+    frontendVisibleRowCount: _rows.length,
+    frontendPeriodRowCount: periodRows.length,
+    backendMatchedCount: backendResult?.matchedCount ?? null,
+    backendPreviewFirst5: Array.isArray(backendResult?.preview)
+      ? backendResult.preview.slice(0, 5).map((row) => ({
+        transactionId: row.transactionId,
+        date: row.date,
+        merchantName: row.merchantName,
+        name: row.name,
+        amount: row.amount,
+        pending: row.pending,
+        reviewed: row.reviewed,
+        willApply: row.willApply,
+        skipReason: row.skipReason,
+      }))
+      : [],
+    backendErrorStatus: backendError?.status || null,
+    visibleWalmartDiagnostics: _getSafeRuleDebugRows(_rows, payload, sourceRow?.id),
   };
+  console.info('[smart-rules preview]', debug);
 }
 
 function getLastSyncLabel(status) {
@@ -293,11 +396,13 @@ export async function renderTransactions(container) {
   let body = document.getElementById('page-body');
   if (!body) return;
 
-  body.innerHTML =
-    '<section class="card transactions-loading-card">' +
-    '<div class="skeleton-line skeleton-line-lg"></div>' +
-    '<div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div>' +
-    '</section>';
+  if (!body.dataset.loaded) {
+    body.innerHTML =
+      '<section class="card transactions-loading-card">' +
+      '<div class="skeleton-line skeleton-line-lg"></div>' +
+      '<div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div>' +
+      '</section>';
+  }
   _attachDelegation(body);
 
   const masterLists = await getMasterLists(false);
@@ -313,11 +418,13 @@ export async function renderTransactions(container) {
   _renderFrame(container);
   body = document.getElementById('page-body');
   if (!body) return;
-  body.innerHTML =
-    '<section class="card transactions-loading-card">' +
-    '<div class="skeleton-line skeleton-line-lg"></div>' +
-    '<div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div>' +
-    '</section>';
+  if (!body.dataset.loaded) {
+    body.innerHTML =
+      '<section class="card transactions-loading-card">' +
+      '<div class="skeleton-line skeleton-line-lg"></div>' +
+      '<div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div>' +
+      '</section>';
+  }
   _attachDelegation(body);
   await _loadAccountTabs();
   const period = getActivePeriod();
@@ -337,6 +444,7 @@ export async function renderTransactions(container) {
 }
 
 function _renderFrame(container) {
+  if (container.querySelector('#page-body')) return;
   const period = getActivePeriod();
   const syncConnected = !!_txPlaidStatus?.connected;
   container.innerHTML =
@@ -467,11 +575,15 @@ function _compareRowsBySort(a, b, sort) {
   return bDate.localeCompare(aDate);
 }
 
-async function _fetchAndRender(period, offset) {
+async function _fetchAndRender(period, offset, options = {}) {
   const body = document.getElementById('page-body');
   if (!body) return;
+  const preserveScroll = options.preserveScroll !== false;
+  const scrollState = preserveScroll ? captureRenderState() : null;
 
-  body.innerHTML = '<section class="card"><p class="empty-state">Loading transactions...</p></section>';
+  if (options.showLoading === true) {
+    body.innerHTML = '<section class="card"><p class="empty-state">Loading transactions...</p></section>';
+  }
 
   try {
     await _fetchAndStore(period, offset);
@@ -480,6 +592,7 @@ async function _fetchAndRender(period, offset) {
   }
 
   _paint(body, period);
+  restoreRenderState(scrollState);
 }
 
 function _paint(body, period) {
@@ -488,7 +601,7 @@ function _paint(body, period) {
   if (_loadError) {
     body.innerHTML =
       '<section class="card"><div class="error-card">Transactions could not load. Try syncing again.</div>' +
-      '<div class="filter-actions"><button class="button button-secondary" data-action="sync-transactions">Sync Transactions</button></div></section>';
+      '<div class="filter-actions"><button type="button" class="button button-secondary" data-action="sync-transactions">Sync Transactions</button></div></section>';
     logRenderTime('transactions.paint.error', renderStartedAt);
     return;
   }
@@ -524,14 +637,16 @@ function _paint(body, period) {
     '<article class="card fintech-kpi fintech-kpi--good"><p class="metric-label">Reviewed</p><h3>' + reviewedCount + '</h3><p>Cleared in this view</p></article>' +
     '</section>' +
     (txFeat('showBankTabs') ? _renderAccountTabs() : '') +
+    _renderReviewTabs() +
     '<section class="card transaction-filter-toolbar">' +
     '<div><strong>Transaction filters</strong><p class="card-description">' + escapeHtml(modeLabel + ' ' + accountScopeLabel) + '</p></div>' +
     '<div class="filter-actions">' +
-    '<button class="button button-secondary" data-action="open-transaction-filters">Filters</button>' +
-    '<button class="button button-secondary" data-action="preview-rules">Preview Rules</button>' +
-    '<button class="button button-secondary" data-action="apply-rules">Apply Rules</button>' +
-    '<button class="button button-secondary" data-action="show-all-synced">Show all synced</button>' +
-    '<button class="button button-secondary" data-action="use-budget-period">Use budget period</button>' +
+    '<button type="button" class="button button-secondary" data-action="open-transaction-filters">Filters</button>' +
+    '<button type="button" class="button button-secondary" data-action="preview-rules">Preview Rules' + (_smartRules.length ? ' (' + String(_smartRules.length) + ')' : '') + '</button>' +
+    '<button type="button" class="button button-secondary" data-action="apply-rules">Apply Rules</button>' +
+    '<button type="button" class="button button-secondary" data-action="manage-rules">Manage Rules</button>' +
+    '<button type="button" class="button button-secondary" data-action="show-all-synced">Show all synced</button>' +
+    '<button type="button" class="button button-secondary" data-action="use-budget-period">Use budget period</button>' +
     '</div>' +
     '</section>' +
     (_rows.length && needsReviewCount === 0 ? '<section class="dashboard-alert success"><strong>Inbox clear</strong><div>All visible transactions are reviewed for this pay period.</div></section>' : '') +
@@ -541,7 +656,7 @@ function _paint(body, period) {
   const hasActiveFilters = Boolean(_filters.search || _filters.accountId || _filters.startDate || _filters.exclusiveEndDate || _filters.type || _filters.category || _filters.reviewed || _filters.pending || _filters.showIgnored || _viewMode !== 'period');
   const tableHtml = _rows.length
     ? _renderTable()
-    : '<section class="card empty-state-card"><h3>' + (hasActiveFilters ? 'No matching transactions' : 'No transactions found') + '</h3><p class="empty-state">' + (hasActiveFilters ? 'Try clearing filters or changing the date range.' : 'Sync your bank or adjust your filters.') + '</p><div class="filter-actions">' + (hasActiveFilters ? '<button class="button button-primary" data-action="clear-transaction-filters">Clear filters</button>' : '<button class="button button-primary" data-action="sync-transactions">Sync Transactions</button>') + '</div></section>';
+    : '<section class="card empty-state-card"><h3>' + (hasActiveFilters ? 'No matching transactions' : 'No transactions found') + '</h3><p class="empty-state">' + (hasActiveFilters ? 'Try clearing filters or changing the date range.' : 'Sync your bank or adjust your filters.') + '</p><div class="filter-actions">' + (hasActiveFilters ? '<button type="button" class="button button-primary" data-action="clear-transaction-filters">Clear filters</button>' : '<button type="button" class="button button-primary" data-action="sync-transactions">Sync Transactions</button>') + '</div></section>';
   const modalTx = _getReviewModalTransaction();
   const modalDraft = modalTx ? normalizeReviewDraft(modalTx, _reviewDraft || {}) : null;
   const modalHtml = modalTx && modalDraft ? _renderTransactionDrawerHtml(modalTx, modalDraft) : '';
@@ -552,6 +667,7 @@ function _paint(body, period) {
   const ruleEditorHtml = renderRuleEditorModalHtml(_ruleEditorAccounts, { showDraftPreviewButton: true });
   const rulePreviewHtml = _rulePreviewState ? renderRulePreviewTableHtml(_rulePreviewState, { title: _rulePreviewState.title || 'Rule Preview' }) : '';
   body.innerHTML = headerHtml + tableHtml + _renderPaginationControls('pagination-bottom') + '</section>' + filterModalHtml + modalHtml + splitModalHtml + ruleEditorHtml + rulePreviewHtml;
+  body.dataset.loaded = '1';
   logRenderTime('transactions.paint', renderStartedAt);
 }
 
@@ -559,15 +675,15 @@ function _renderBulkActionBar(selectedCount) {
   return (
     '<section class="card bulk-action-bar">' +
     '<strong>' + escapeHtml(String(selectedCount)) + ' selected</strong>' +
-    '<button class="button button-secondary button-sm" data-action="bulk-mark-reviewed">Mark Reviewed</button>' +
-    '<button class="button button-secondary button-sm" data-action="bulk-mark-needs-review">Mark Needs Review</button>' +
+    '<button type="button" class="button button-secondary button-sm" data-action="bulk-mark-reviewed">Mark Reviewed</button>' +
+    '<button type="button" class="button button-secondary button-sm" data-action="bulk-mark-needs-review">Mark Needs Review</button>' +
     '<label class="form-field bulk-field"><span>Set Type</span><select id="bulk-type-select"><option value="">Choose</option>' +
     TRANSACTION_TYPES.map((type) => '<option value="' + escapeHtml(type) + '">' + escapeHtml(type) + '</option>').join('') +
     '</select></label>' +
     '<label class="form-field bulk-field"><span>Set Category</span><select id="bulk-category-select"><option value="">Choose</option>' +
     _expenseCategoryOptions.map((category) => '<option value="' + escapeHtml(category) + '">' + escapeHtml(category) + '</option>').join('') +
     '</select></label>' +
-    '<button class="button button-secondary button-sm" data-action="bulk-clear-selection">Clear Selection</button>' +
+    '<button type="button" class="button button-secondary button-sm" data-action="bulk-clear-selection">Clear Selection</button>' +
     '</section>'
   );
 }
@@ -606,8 +722,8 @@ function _renderFiltersModalHtml({ categoryFilterOptions, txFeat }) {
       : '') +
     '</div>' +
     '<div class="filter-actions">' +
-    '<button class="button button-secondary" data-action="clear-transaction-filters">Clear filters</button>' +
-    '<button class="button button-primary" data-action="close-transaction-filters">Done</button>' +
+    '<button type="button" class="button button-secondary" data-action="clear-transaction-filters">Clear filters</button>' +
+    '<button type="button" class="button button-primary" data-action="close-transaction-filters">Done</button>' +
     '</div>' +
     '</section>'
   );
@@ -633,7 +749,7 @@ function _renderTransactionDrawerHtml(transaction, draft) {
     '<aside class="transaction-drawer" role="dialog" aria-modal="true" aria-label="Review transaction">' +
     '<header class="transaction-drawer-header">' +
     '<div><p class="metric-label">Review/Edit</p><h3>' + escapeHtml(getMerchantName(transaction)) + '</h3></div>' +
-    '<button class="button button-secondary button-sm" data-action="close-review-modal">Close</button>' +
+    '<button type="button" class="button button-secondary button-sm" data-action="close-review-modal">Close</button>' +
     '</header>' +
     '<section class="transaction-drawer-section">' +
     '<h4>Transaction Details</h4>' +
@@ -668,7 +784,7 @@ function _renderTransactionDrawerHtml(transaction, draft) {
     '</div>' +
     '<label class="form-field field-checkbox"><input type="checkbox" id="review-rule-apply-current"> <span>Apply to current matching unreviewed transactions too</span></label>' +
     '<label class="form-field field-checkbox"><input type="checkbox" id="review-rule-apply-reviewed"> <span>Mark matched transactions reviewed</span></label>' +
-    '<div class="filter-actions"><button class="button button-secondary button-sm" data-action="preview-review-rule">Preview matches</button></div>' +
+    '<div class="filter-actions"><button type="button" class="button button-secondary button-sm" data-action="preview-review-rule">Preview matches</button></div>' +
     '<div id="review-rule-preview" class="settings-message"></div>' +
     '</div>' +
     '<label class="form-field"><span>Notes</span><textarea id="review-notes" rows="3" placeholder="Optional notes">' + escapeHtml(draft.notes || '') + '</textarea></label>' +
@@ -681,7 +797,7 @@ function _renderTransactionDrawerHtml(transaction, draft) {
     '<div><span>Remaining</span><strong class="' + (Math.abs(splitRemaining) < 0.005 ? 'text-good' : 'text-warning') + '">' + escapeHtml('$' + Math.abs(splitRemaining).toFixed(2)) + '</strong></div>' +
     '</div>' +
     '<p class="card-description">Use split rows when one bank transaction needs to count toward multiple categories. Final save is blocked until split totals match.</p>' +
-    '<button class="button button-secondary" data-action="open-split-editor" data-id="' + escapeHtml(transaction.id) + '">Edit Split</button>' +
+    '<button type="button" class="button button-secondary" data-action="open-split-editor" data-id="' + escapeHtml(transaction.id) + '">Edit Split</button>' +
     '</section>' +
     '<section class="transaction-drawer-section">' +
     '<h4>Match Hints</h4>' +
@@ -689,8 +805,8 @@ function _renderTransactionDrawerHtml(transaction, draft) {
     '</section>' +
     '<div id="review-error" class="settings-message error"></div>' +
     '<footer class="transaction-drawer-actions">' +
-    '<button class="button button-secondary" data-action="create-rule-from-transaction" data-id="' + escapeHtml(transaction.id) + '">Create Rule</button>' +
-    '<button class="button button-primary" data-action="save-transaction-review" data-id="' + escapeHtml(transaction.id) + '">Save</button>' +
+    '<button type="button" class="button button-secondary" data-action="create-rule-from-transaction" data-id="' + escapeHtml(transaction.id) + '">Create Rule</button>' +
+    '<button type="button" class="button button-primary" data-action="save-transaction-review" data-id="' + escapeHtml(transaction.id) + '">Save</button>' +
     '</footer>' +
     '</aside>'
   );
@@ -712,23 +828,40 @@ function _renderPaginationControls(extraClass = '') {
     '<select class="pagination-page-size" id="tx-page-size">' +
     PAGE_SIZE_OPTIONS.map((size) => '<option value="' + size + '"' + (_limit === size ? ' selected' : '') + '>' + size + ' per page</option>').join('') +
     '</select>' +
-    '<button class="button button-secondary button-sm" data-action="page-prev"' + (_pagination.hasPrevious ? '' : ' disabled') + '>\u2190 Previous</button>' +
-    '<button class="button button-secondary button-sm" data-action="page-next"' + (_pagination.hasNext ? '' : ' disabled') + '>Next \u2192</button>' +
+    '<button type="button" class="button button-secondary button-sm" data-action="page-prev"' + (_pagination.hasPrevious ? '' : ' disabled') + '>\u2190 Previous</button>' +
+    '<button type="button" class="button button-secondary button-sm" data-action="page-next"' + (_pagination.hasNext ? '' : ' disabled') + '>Next \u2192</button>' +
     '</div></div>'
   );
 }
 
 function _renderAccountTabs() {
-  const tabs = (_accountTabs.length ? _accountTabs : [{ id: '', label: 'All accounts' }]).map((tab) => {
+  const tabs = (_accountTabs.length ? _accountTabs : [{ id: '', label: 'All' }]).map((tab) => {
     const isActive = String(tab.id || '') === String(_filters.accountId || '');
     return (
-      '<button class="button button-secondary account-tab-button' + (isActive ? ' active' : '') + '" data-action="select-account-tab" data-account-id="' + escapeHtml(tab.id || '') + '">' +
+      '<button type="button" class="button button-secondary account-tab-button' + (isActive ? ' active' : '') + '" data-action="select-account-tab" data-account-id="' + escapeHtml(tab.id || '') + '">' +
       escapeHtml(tab.label) +
       '</button>'
     );
   }).join('');
 
   return '<div class="account-tabs" role="tablist" aria-label="Filter transactions by account">' + tabs + '</div>';
+}
+
+function _renderReviewTabs() {
+  const tabs = [
+    { id: 'false', label: 'Unreviewed' },
+    { id: 'true', label: 'Reviewed' },
+  ];
+  const html = tabs.map((tab) => {
+    const isActive = String(_filters.reviewed || 'false') === tab.id;
+    return (
+      '<button type="button" class="button button-secondary account-tab-button' + (isActive ? ' active' : '') + '" data-action="select-review-tab" data-reviewed="' + tab.id + '">' +
+      escapeHtml(tab.label) +
+      '</button>'
+    );
+  }).join('');
+
+  return '<div class="account-tabs review-tabs" role="tablist" aria-label="Filter transactions by review status">' + html + '</div>';
 }
 
 function _renderTable() {
@@ -746,7 +879,7 @@ function _renderTable() {
       ? '<span class="split-badge">Split' + (row.split_is_final ? '' : ' (Draft)') + '</span>'
       : '';
     const splitToggle = hasSplits
-      ? '<button class="button button-secondary button-sm" data-action="toggle-split-details" data-id="' + escapeHtml(row.id) + '">' + (isExpanded ? 'Hide Splits' : 'Show Splits') + '</button>'
+      ? '<button type="button" class="button button-secondary button-sm" data-action="toggle-split-details" data-id="' + escapeHtml(row.id) + '">' + (isExpanded ? 'Hide Splits' : 'Show Splits') + '</button>'
       : '';
 
     const parentRow = (
@@ -760,10 +893,10 @@ function _renderTable() {
       '<td>' + (hasFinalSplits ? '<span class="muted-note">-</span>' : (row.category ? '<span class="category-badge">' + escapeHtml(row.category) + '</span>' : '<span class="muted-note">-</span>')) + '</td>' +
       '<td class="transaction-status-cell">' + renderStatusPills(row) + '</td>' +
       '<td class="transaction-actions">' +
-      (isFeatureEnabled(_txCcSettings, 'transactions', 'showSplitTransactionTools') ? '<button class="button button-secondary button-sm" data-action="open-split-editor" data-id="' + escapeHtml(row.id) + '">Split</button>' : '') +
+      (isFeatureEnabled(_txCcSettings, 'transactions', 'showSplitTransactionTools') ? '<button type="button" class="button button-secondary button-sm" data-action="open-split-editor" data-id="' + escapeHtml(row.id) + '">Split</button>' : '') +
       splitToggle +
-      '<button class="button button-secondary button-sm" data-action="review-transaction" data-id="' + escapeHtml(row.id) + '">Review</button>' +
-      '<button class="button button-secondary button-sm" data-action="toggle-ignore-transaction" data-id="' + escapeHtml(row.id) + '">' + (row.ignored ? 'Restore' : 'Ignore') + '</button>' +
+      '<button type="button" class="button button-secondary button-sm" data-action="review-transaction" data-id="' + escapeHtml(row.id) + '">Review</button>' +
+      '<button type="button" class="button button-secondary button-sm" data-action="toggle-ignore-transaction" data-id="' + escapeHtml(row.id) + '">' + (row.ignored ? 'Restore' : 'Ignore') + '</button>' +
       '</td>' +
       '</tr>'
     );
@@ -818,7 +951,7 @@ function _renderSplitModalHtml(row) {
         '<td><input type="text" data-split-field="subcategory" data-split-index="' + index + '" value="' + escapeHtml(line.subcategory || '') + '" placeholder="Optional"></td>' +
         '<td><input type="number" step="0.01" min="0" data-split-field="amount" data-split-index="' + index + '" value="' + escapeHtml(String(Number(line.amount || 0).toFixed(2))) + '"></td>' +
         '<td><input type="text" data-split-field="note" data-split-index="' + index + '" value="' + escapeHtml(line.note || '') + '" placeholder="Optional"></td>' +
-        '<td><button class="button button-secondary button-sm" data-action="remove-split-line" data-index="' + index + '">Remove</button></td>' +
+        '<td><button type="button" class="button button-secondary button-sm" data-action="remove-split-line" data-index="' + index + '">Remove</button></td>' +
         '</tr>'
       );
     }).join('')
@@ -832,16 +965,16 @@ function _renderSplitModalHtml(row) {
   return (
     '<div class="modal-overlay" data-action="close-split-modal">' +
     '<div class="modal-card split-modal" role="dialog" aria-modal="true" aria-label="Split transaction">' +
-    '<header class="modal-header"><h3 class="modal-title">Split Transaction</h3><button class="button button-secondary button-sm" data-action="close-split-modal">Close</button></header>' +
+    '<header class="modal-header"><h3 class="modal-title">Split Transaction</h3><button type="button" class="button button-secondary button-sm" data-action="close-split-modal">Close</button></header>' +
     '<p class="card-description">' + escapeHtml(row.name || row.merchant_name || 'Transaction') + ' | Parent amount: $' + escapeHtml(Math.abs(Number(row.amount || 0)).toFixed(2)) + '</p>' +
     '<datalist id="split-category-options">' + categoryOptions.map((name) => '<option value="' + escapeHtml(name) + '"></option>').join('') + '</datalist>' +
     '<div class="table-wrap"><table class="table table-compact"><thead><tr><th>Category</th><th>Subcategory</th><th>Amount</th><th>Note</th><th></th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>' +
-    '<div class="settings-actions"><button class="button button-secondary" data-action="add-split-line">Add Line</button></div>' +
+    '<div class="settings-actions"><button type="button" class="button button-secondary" data-action="add-split-line">Add Line</button></div>' +
     '<p class="settings-message ' + deltaClass + '">Split total: $' + totals.total.toFixed(2) + ' / Target: $' + totals.target.toFixed(2) + ' (' + deltaLabel + ')</p>' +
     (_splitValidationMessage ? '<p class="settings-message error">' + escapeHtml(_splitValidationMessage) + '</p>' : '') +
     '<div class="settings-actions">' +
-    '<button class="button button-secondary" data-action="save-split-draft" data-id="' + escapeHtml(row.id) + '">Save Draft</button>' +
-    '<button class="button button-primary" data-action="save-split-final" data-id="' + escapeHtml(row.id) + '"' + (totals.balanced && lines.length > 0 ? '' : ' disabled') + '>Save Final</button>' +
+    '<button type="button" class="button button-secondary" data-action="save-split-draft" data-id="' + escapeHtml(row.id) + '">Save Draft</button>' +
+    '<button type="button" class="button button-primary" data-action="save-split-final" data-id="' + escapeHtml(row.id) + '"' + (totals.balanced && lines.length > 0 ? '' : ' disabled') + '>Save Final</button>' +
     '</div>' +
     '</div></div>'
   );
@@ -881,7 +1014,7 @@ function _attachDelegation(body) {
       return;
     }
     if (action === 'clear-transaction-filters') {
-      _filters = { search: '', accountId: '', startDate: '', exclusiveEndDate: '', type: '', category: '', reviewed: '', pending: _pendingHiddenBySettings ? 'false' : '', showIgnored: false, sort: _filters.sort || 'date_desc' };
+      _filters = { search: '', accountId: '', startDate: '', exclusiveEndDate: '', type: '', category: '', reviewed: 'false', pending: _pendingHiddenBySettings ? 'false' : '', showIgnored: false, sort: _filters.sort || 'date_desc' };
       _viewMode = 'period';
       _selectedTransactionIds = new Set();
       await _fetchAndRender(period, 0);
@@ -905,6 +1038,12 @@ function _attachDelegation(body) {
     }
     if (action === 'select-account-tab') {
       _filters.accountId = String(button.dataset.accountId || '');
+      await _fetchAndRender(period, 0);
+      return;
+    }
+    if (action === 'select-review-tab') {
+      _filters.reviewed = String(button.dataset.reviewed || 'false') === 'true' ? 'true' : 'false';
+      _selectedTransactionIds = new Set();
       await _fetchAndRender(period, 0);
       return;
     }
@@ -1043,7 +1182,7 @@ function _attachDelegation(body) {
           _txMessageType = 'success';
         }
         emitAppEvent('budget:transactions-updated');
-        _repaint();
+        await _fetchAndRender(period, _pagination.offset);
       } catch (err) {
         if (errorEl) errorEl.textContent = err.message;
         else {
@@ -1101,22 +1240,15 @@ function _attachDelegation(body) {
           ...payload,
           excludeTransactionId: row.id,
         }, getActivePeriod());
+        await _logRulePreviewDebug({ sourceRow: row, payload, backendResult: result });
         messageEl.className = 'settings-message success';
-        messageEl.textContent =
-          'Matched ' + String(result.matchedCount || 0) + ' transaction(s): ' +
-          String(result.unreviewedMatchedCount || 0) + ' unreviewed, ' +
-          String(result.reviewedMatchedCount || 0) + ' reviewed, and ' +
-          String(result.pendingMatchedCount || 0) + ' pending.' +
-          (result.sourceTransactionExcluded ? ' Source transaction excluded.' : '');
+        messageEl.textContent = _formatRulePreviewMessage(result);
       } catch (err) {
         const result = await _previewReviewRuleLocally(payload, row.id);
+        await _logRulePreviewDebug({ sourceRow: row, payload, backendResult: result, backendError: err });
         if (err?.status === 404) {
           messageEl.className = 'settings-message success';
-          messageEl.textContent =
-            'Matched ' + String(result.matchedCount || 0) + ' transaction(s): ' +
-            String(result.unreviewedMatchedCount || 0) + ' unreviewed, ' +
-            String(result.reviewedMatchedCount || 0) + ' reviewed, and ' +
-            String(result.pendingMatchedCount || 0) + ' pending.';
+          messageEl.textContent = _formatRulePreviewMessage(result);
         } else {
           messageEl.className = 'settings-message error';
           messageEl.textContent = err?.message || 'Failed to preview matches.';
@@ -1140,6 +1272,7 @@ function _attachDelegation(body) {
       return;
     }
     if (action === 'rules-preview-one') {
+      event.stopPropagation();
       button.disabled = true;
       try {
         const result = await previewRule(button.dataset.id, getActivePeriod());
@@ -1176,6 +1309,7 @@ function _attachDelegation(body) {
       return;
     }
     if (action === 'close-rule-preview') {
+      event.stopPropagation();
       _rulePreviewState = null;
       _repaint();
       return;
@@ -1185,7 +1319,9 @@ function _attachDelegation(body) {
       try {
         const result = await applyRules(true, getActivePeriod());
         const count = result.matchedCount ?? result.applied ?? result.count ?? 0;
-        _txMessage = 'Preview: ' + count + ' transaction(s) would be updated.';
+        const updated = result.updatedCount ?? result.applyableCount ?? 0;
+        _rulePreviewState = { title: 'Rules Preview', ...result };
+        _txMessage = 'Preview ready: ' + String(count) + ' rule match(es), ' + String(updated) + ' transaction(s) can be updated.';
         _txMessageType = 'success';
         _repaint();
       } catch (err) {
@@ -1195,6 +1331,20 @@ function _attachDelegation(body) {
       } finally {
         button.disabled = false;
       }
+      return;
+    }
+    if (action === 'manage-rules') {
+      button.disabled = true;
+      try {
+        const current = _txCcSettings || await loadCommandCenterSettings().catch(() => null);
+        _txCcSettings = await updateCommandCenterFeature(current || {}, 'settings', 'showRulesManager', true);
+      } catch (err) {
+        _txMessage = 'Could not restore the Rules section automatically: ' + (err?.message || 'Unknown error');
+        _txMessageType = 'error';
+      } finally {
+        button.disabled = false;
+      }
+      emitAppEvent('app:open-tab', { tabId: 'settings' });
       return;
     }
     if (action === 'apply-rules') {
@@ -1336,7 +1486,9 @@ function _attachDelegation(body) {
 function _repaint() {
   const body = document.getElementById('page-body');
   if (!body) return;
+  const scrollState = captureRenderState();
   _paint(body, getActivePeriod());
+  restoreRenderState(scrollState);
 }
 
 async function _openSplitEditor(id) {
@@ -1453,7 +1605,7 @@ async function _bulkPatchSelected(updates) {
     : successCount + ' transaction(s) updated.';
   _txMessageType = failureCount ? 'error' : 'success';
   emitAppEvent('budget:transactions-updated');
-  _repaint();
+  await _fetchAndRender(getActivePeriod(), _pagination.offset);
 }
 
 async function _loadAccountTabs() {
@@ -1479,13 +1631,13 @@ async function _loadAccountTabs() {
       : [];
 
     mapped.sort((a, b) => a.label.localeCompare(b.label));
-    _accountTabs = [{ id: '', label: 'All accounts' }, ...mapped];
+    _accountTabs = [{ id: '', label: 'All' }, ...mapped];
     if (_filters.accountId && !_accountTabs.some((tab) => tab.id === _filters.accountId)) {
       _filters.accountId = '';
     }
   } catch (_err) {
     _ruleEditorAccounts = [];
-    _accountTabs = [{ id: '', label: 'All accounts' }];
+    _accountTabs = [{ id: '', label: 'All' }];
   }
 }
 

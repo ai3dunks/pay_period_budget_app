@@ -6,6 +6,7 @@ import { renderShell, renderNav, renderBudgetPeriodSelector, PERIOD_AWARE_TABS }
 import { getAppState, setActiveTab, setSelectedPeriodId, getActivePeriod } from './appState.js';
 import { emitAppEvent } from './events.js';
 import { getPeriodLabel } from '../utils/formatters.js';
+import { withPreservedRenderState } from '../utils/renderStability.js';
 
 // Page modules
 import { renderSettings, handleConnectPlaid, handleSyncTransactions, handleRemovePlaidItem, handleRemovePlaidAccount, handleRestorePlaidAccount, handleCleanupRemovedPlaid, handleRulesAdd, handleRulesEdit, handleRulesToggleEnabled, handleRulePreview, handleRuleApply, handleRuleDelete, handleSaveRuleEditor, handleRuleEditorChange, handleRuleEditorInput } from '../ui/settings.js';
@@ -45,6 +46,7 @@ const TAB_PAGE_KEY = {
   'master-lists': 'masterLists',
 };
 
+let _lastRenderedTab = '';
 
 // ── Entry point ─────────────────────────────────────────────────────────────
 
@@ -82,7 +84,7 @@ function _navigate(tabId) {
   setActiveTab(tabId);
   _renderNav();
   _renderPeriodSelector();
-  renderActivePage();
+  renderActivePage({ preserveScroll: false });
 }
 
 // ── Internal rendering ───────────────────────────────────────────────────────
@@ -107,16 +109,23 @@ function _renderPeriodSelector() {
   renderBudgetPeriodSelector(periods, selectedPeriodId);
 }
 
-export async function renderActivePage() {
+export async function renderActivePage(options = {}) {
   const { activeTab } = getAppState();
   const content = document.getElementById('page-content');
   if (!content) return;
-  try {
-    await _renderPage(activeTab, content);
-  } catch (err) {
-    console.error('Page render failed:', err);
-    content.innerHTML = '<div class="card"><div class="error-card">Page failed to render. Check console for details.</div></div>';
-  }
+  const preserveScroll = options.preserveScroll ?? (_lastRenderedTab === activeTab);
+  const run = async () => {
+    try {
+      await _renderPage(activeTab, content);
+    } catch (err) {
+      console.error('Page render failed:', err);
+      content.innerHTML = '<div class="card"><div class="error-card">Page failed to render. Check console for details.</div></div>';
+    } finally {
+      _lastRenderedTab = activeTab;
+    }
+  };
+  if (preserveScroll) await withPreservedRenderState(run);
+  else await run();
 }
 
 async function _renderPage(tabId, content) {
@@ -262,6 +271,7 @@ function _attachGlobalListeners() {
   document.addEventListener('click', async (e) => {
     const btn = e.target.closest('[data-action]');
     if (!btn) return;
+    if (btn.tagName === 'BUTTON') e.preventDefault();
     const action = btn.dataset.action;
 
     // Plaid + Settings
@@ -297,6 +307,10 @@ function _attachGlobalListeners() {
         return;
       }
     }
+  });
+
+  document.addEventListener('submit', (e) => {
+    if (e.target?.closest?.('#app')) e.preventDefault();
   });
 
   document.addEventListener('change', (e) => {

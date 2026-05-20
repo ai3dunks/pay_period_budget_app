@@ -81,7 +81,7 @@ function _tabsHtml() {
     { id: 'expense', label: 'Expense List' },
     { id: 'recurring-bills', label: 'Recurring Bills List' },
   ].map((tab) =>
-    '<button class="master-tab' + (_uiState.activeTab === tab.id ? ' active' : '') + '" data-action="master-list-tab" data-list-type="' + tab.id + '">' +
+    '<button type="button" class="master-tab' + (_uiState.activeTab === tab.id ? ' active' : '') + '" data-action="master-list-tab" data-list-type="' + tab.id + '">' +
     tab.label + '</button>'
   ).join('');
 }
@@ -92,7 +92,7 @@ function _expenseAddForm() {
     '<label class="form-field"><span>Budget Amount</span><input id="expense-add-budget-amount" type="number" step="0.01" value="0"></label>' +
     '<label class="form-field field-checkbox"><input id="expense-add-active" type="checkbox" checked> <span>Active</span></label>' +
     '<label class="form-field"><span>Notes</span><textarea id="expense-add-notes" rows="2" placeholder="Optional notes"></textarea></label>' +
-    '</div><div class="inline-actions"><button class="button button-primary" data-action="master-expense-add">Add expense</button></div></div>';
+    '</div><div class="inline-actions"><button type="button" class="button button-primary" data-action="master-expense-add">Add expense</button></div></div>';
 }
 
 function _billAddForm() {
@@ -106,7 +106,7 @@ function _billAddForm() {
     '<label class="form-field"><span>Autopay</span><select id="recurring-add-autopay"><option value="1">Yes</option><option value="0">No</option></select></label>' +
     '<label class="form-field field-checkbox"><input id="recurring-add-active" type="checkbox" checked> <span>Active</span></label>' +
     '<label class="form-field"><span>Notes</span><textarea id="recurring-add-notes" rows="2" placeholder="Optional notes"></textarea></label>' +
-    '</div><div class="inline-actions"><button class="button button-primary" data-action="master-recurring-add">Add recurring bill</button></div></div>';
+    '</div><div class="inline-actions"><button type="button" class="button button-primary" data-action="master-recurring-add">Add recurring bill</button></div></div>';
 }
 
 function _expenseRow(row) {
@@ -116,8 +116,8 @@ function _expenseRow(row) {
     '<td>' + _activeBadge(row.active) + '</td>' +
     '<td>' + escapeHtml(row.notes || '') + '</td>' +
     '<td class="inline-actions">' +
-    '<button class="button button-secondary button-sm" data-action="master-expense-edit" data-id="' + escapeHtml(row.id) + '">Edit</button>' +
-    '<button class="button button-secondary button-sm" data-action="master-expense-toggle-active" data-id="' + escapeHtml(row.id) + '" data-active="' + (row.active ? '1' : '0') + '">' + (row.active ? 'Deactivate' : 'Reactivate') + '</button>' +
+    '<button type="button" class="button button-secondary button-sm" data-action="master-expense-edit" data-id="' + escapeHtml(row.id) + '">Edit</button>' +
+    '<button type="button" class="button button-secondary button-sm" data-action="master-expense-toggle-active" data-id="' + escapeHtml(row.id) + '" data-active="' + (row.active ? '1' : '0') + '">' + (row.active ? 'Deactivate' : 'Reactivate') + '</button>' +
     '</td></tr>';
 }
 
@@ -133,8 +133,8 @@ function _billRow(row) {
     '<td>' + _activeBadge(row.active) + '</td>' +
     '<td>' + escapeHtml(row.notes || '') + '</td>' +
     '<td class="inline-actions">' +
-    '<button class="button button-secondary button-sm" data-action="master-recurring-edit" data-id="' + escapeHtml(row.id) + '">Edit</button>' +
-    '<button class="button button-secondary button-sm" data-action="master-recurring-toggle-active" data-id="' + escapeHtml(row.id) + '" data-active="' + (row.active ? '1' : '0') + '">' + (row.active ? 'Deactivate' : 'Reactivate') + '</button>' +
+    '<button type="button" class="button button-secondary button-sm" data-action="master-recurring-edit" data-id="' + escapeHtml(row.id) + '">Edit</button>' +
+    '<button type="button" class="button button-secondary button-sm" data-action="master-recurring-toggle-active" data-id="' + escapeHtml(row.id) + '" data-active="' + (row.active ? '1' : '0') + '">' + (row.active ? 'Deactivate' : 'Reactivate') + '</button>' +
     '</td></tr>';
 }
 
@@ -145,8 +145,8 @@ function _expenseEditRow(row) {
     '<label class="form-field field-checkbox"><input id="expense-edit-active" type="checkbox"' + (row.active ? ' checked' : '') + '> <span>Active</span></label>' +
     '<label class="form-field"><span>Notes</span><textarea id="expense-edit-notes" rows="2">' + escapeHtml(row.notes || '') + '</textarea></label>' +
     '</div><div class="inline-actions">' +
-    '<button class="button button-primary" data-action="master-expense-save" data-id="' + escapeHtml(row.id) + '">Save</button>' +
-    '<button class="button button-secondary" data-action="master-expense-cancel">Cancel</button>' +
+    '<button type="button" class="button button-primary" data-action="master-expense-save" data-id="' + escapeHtml(row.id) + '">Save</button>' +
+    '<button type="button" class="button button-secondary" data-action="master-expense-cancel">Cancel</button>' +
     '</div></div></td></tr>';
 }
 
@@ -164,8 +164,8 @@ function _billEditRow(row) {
     '<label class="form-field field-checkbox"><input id="recurring-edit-active" type="checkbox"' + (row.active ? ' checked' : '') + '> <span>Active</span></label>' +
     '<label class="form-field"><span>Notes</span><textarea id="recurring-edit-notes" rows="2">' + escapeHtml(row.notes || '') + '</textarea></label>' +
     '</div><div class="inline-actions">' +
-    '<button class="button button-primary" data-action="master-recurring-save" data-id="' + escapeHtml(row.id) + '">Save</button>' +
-    '<button class="button button-secondary" data-action="master-recurring-cancel">Cancel</button>' +
+    '<button type="button" class="button button-primary" data-action="master-recurring-save" data-id="' + escapeHtml(row.id) + '">Save</button>' +
+    '<button type="button" class="button button-secondary" data-action="master-recurring-cancel">Cancel</button>' +
     '</div></div></td></tr>';
 }
 

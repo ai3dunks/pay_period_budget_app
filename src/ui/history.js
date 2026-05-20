@@ -277,8 +277,8 @@ function renderSnapshotTable(snapshots, selectedId) {
       '<td>' + escapeHtml(fmt(s.cash_remaining)) + '</td>' +
       '<td>' + escapeHtml(fmt(s.planned_transfers_total)) + '</td>' +
       '<td class="inline-actions">' +
-      '<button class="button button-secondary button-sm" data-action="history-view" data-id="' + escapeHtml(s.id) + '">' + (isSelected ? 'Close' : 'View') + '</button>' +
-      '<button class="button button-danger button-sm" data-action="history-delete" data-id="' + escapeHtml(s.id) + '">Delete</button>' +
+      '<button type="button" class="button button-secondary button-sm" data-action="history-view" data-id="' + escapeHtml(s.id) + '">' + (isSelected ? 'Close' : 'View') + '</button>' +
+      '<button type="button" class="button button-danger button-sm" data-action="history-delete" data-id="' + escapeHtml(s.id) + '">Delete</button>' +
       '</td>' +
       '</tr>'
     );
@@ -413,7 +413,7 @@ function renderSnapshotDetail(snapshot) {
     '<h4>Notes</h4>' +
     '<textarea id="snapshot-notes-input" class="snapshot-notes-textarea" rows="3" placeholder="Add notes about this period...">' + escapeHtml(snapshot.notes || '') + '</textarea>' +
     '<div class="inline-actions" style="margin-top:8px;">' +
-    '<button class="button button-secondary button-sm" data-action="history-save-notes" data-id="' + escapeHtml(snapshot.id) + '">Save Notes</button>' +
+    '<button type="button" class="button button-secondary button-sm" data-action="history-save-notes" data-id="' + escapeHtml(snapshot.id) + '">Save Notes</button>' +
     '</div>' +
     '<p id="snapshot-notes-message" class="muted-note" style="min-height:16px;margin-top:4px;"></p>' +
     '</div>' +
@@ -545,7 +545,7 @@ export async function renderHistory(container, period, periodLabel, options = {}
     '<h2 class="page-title">History</h2>' +
     '<p class="page-description">Review saved pay period snapshots.</p>' +
     '</div>' +
-    '<div class="page-header-right"><span class="status-badge">' + escapeHtml(periodLabel) + '</span> <button class="button button-secondary button-sm" data-action="history-view-trends">View Trends</button></div>';
+    '<div class="page-header-right"><span class="status-badge">' + escapeHtml(periodLabel) + '</span> <button type="button" class="button button-secondary button-sm" data-action="history-view-trends">View Trends</button></div>';
   pageWrap.appendChild(header);
 
   const body = document.createElement('div');
@@ -586,7 +586,7 @@ export async function renderHistory(container, period, periodLabel, options = {}
       '</div>' +
       (message ? '<p class="settings-message ' + (messageError ? 'error' : 'success') + '">' + escapeHtml(message) + '</p>' : '') +
       '<div class="inline-actions">' +
-      '<button class="button button-primary" data-action="history-save-snapshot" ' + (saving ? 'disabled' : '') + '>' +
+      '<button type="button" class="button button-primary" data-action="history-save-snapshot" ' + (saving ? 'disabled' : '') + '>' +
       (saving ? 'Saving...' : 'Save Current Period Snapshot') + '</button>' +
       '</div>' +
       '</section>';

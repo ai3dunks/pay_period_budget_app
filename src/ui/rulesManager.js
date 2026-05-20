@@ -229,9 +229,9 @@ export function renderRuleEditorModalHtml(accounts = [], options = {}) {
     '<p class="card-description" style="margin-top: 0;">' + escapeHtml(confidenceModeLabel) + ': ' + escapeHtml(confidenceHelp) + '</p>' +
     '<div id="rule-editor-error" class="settings-message error">' + escapeHtml(ruleEditorState.error || '') + '</div>' +
     '<div class="filter-actions">' +
-    '<button class="button button-secondary" data-action="close-rule-editor">Close</button>' +
-    (options.showDraftPreviewButton === false ? '' : '<button class="button button-secondary" data-action="preview-rule-draft">Preview matches</button>') +
-    '<button class="button button-primary" data-action="save-rule-editor">' + (draft.mode === 'edit' ? 'Save Rule' : 'Create Rule') + '</button>' +
+    '<button type="button" class="button button-secondary" data-action="close-rule-editor">Close</button>' +
+    (options.showDraftPreviewButton === false ? '' : '<button type="button" class="button button-secondary" data-action="preview-rule-draft">Preview matches</button>') +
+    '<button type="button" class="button button-primary" data-action="save-rule-editor">' + (draft.mode === 'edit' ? 'Save Rule' : 'Create Rule') + '</button>' +
     '</div>' +
     '</section>'
   );
@@ -248,9 +248,10 @@ export function renderRulePreviewTableHtml(result, options = {}) {
   const rowsHtml = rows.length
     ? rows.map((row) => (
       '<tr>' +
+      '<td>' + escapeHtml(row.ruleName || '-') + '</td>' +
       '<td>' + escapeHtml(row.date || '-') + '</td>' +
       '<td>' + escapeHtml(row.merchantName || row.name || '-') + '</td>' +
-      '<td>' + escapeHtml(row.accountId || '-') + '</td>' +
+      '<td>' + escapeHtml(row.accountName || row.accountId || '-') + '</td>' +
       '<td>' + escapeHtml(row.currentType || '-') + '</td>' +
       '<td>' + escapeHtml(row.currentCategory || '-') + '</td>' +
       '<td>' + escapeHtml(row.newType || '-') + '</td>' +
@@ -259,14 +260,14 @@ export function renderRulePreviewTableHtml(result, options = {}) {
       '<td>' + escapeHtml(row.reviewed ? 'Reviewed' : 'Needs Review') + '</td>' +
       '</tr>'
     )).join('')
-    : '<tr><td colspan="9"><div class="empty-state">No matches found.</div></td></tr>';
+    : '<tr><td colspan="10"><div class="empty-state">No matches found.</div></td></tr>';
 
   return (
     '<div class="modal-backdrop" data-action="close-rule-preview"></div>' +
     '<section class="review-modal rule-preview-modal" role="dialog" aria-modal="true" aria-label="' + escapeHtml(title) + '">' +
     '<div class="card-header"><h3 class="card-title">' + escapeHtml(title) + '</h3><p class="card-description">' + escapeHtml(matchedCount + ' matched, ' + updatedCount + ' would update' + (skippedPendingCount || skippedReviewedCount ? ', ' + skippedPendingCount + ' pending skipped, ' + skippedReviewedCount + ' reviewed skipped' : '')) + '</p></div>' +
-    '<div class="table-wrap"><table class="table table-compact"><thead><tr><th>Date</th><th>Merchant</th><th>Account</th><th>Current Type</th><th>Current Category</th><th>New Type</th><th>New Category</th><th>Pending</th><th>Reviewed</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>' +
-    '<div class="filter-actions"><button class="button button-secondary" data-action="close-rule-preview">Close</button></div>' +
+    '<div class="table-wrap"><table class="table table-compact"><thead><tr><th>Rule</th><th>Date</th><th>Merchant</th><th>Account</th><th>Current Type</th><th>Current Category</th><th>New Type</th><th>New Category</th><th>Pending</th><th>Reviewed</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>' +
+    '<div class="filter-actions"><button type="button" class="button button-secondary" data-action="close-rule-preview">Close</button></div>' +
     '</section>'
   );
 }

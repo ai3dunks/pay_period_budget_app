@@ -81,8 +81,8 @@ function renderAdjustmentsSection(adjustments, period, messageText = '', message
     '<td>' + escapeHtml(adj.account || '-') + '</td>' +
     '<td>' + escapeHtml(adj.notes || '-') + '</td>' +
     '<td class="inline-actions">' +
-    '<button class="button button-secondary button-sm" data-action="forecast-edit-adjustment" data-id="' + escapeHtml(adj.id) + '">Edit</button>' +
-    '<button class="button button-danger button-sm" data-action="forecast-delete-adjustment" data-id="' + escapeHtml(adj.id) + '">Delete</button>' +
+    '<button type="button" class="button button-secondary button-sm" data-action="forecast-edit-adjustment" data-id="' + escapeHtml(adj.id) + '">Edit</button>' +
+    '<button type="button" class="button button-danger button-sm" data-action="forecast-delete-adjustment" data-id="' + escapeHtml(adj.id) + '">Delete</button>' +
     '</td>' +
     '</tr>'
   )).join('') || '<tr><td colspan="7">No manual adjustments yet.</td></tr>';
@@ -98,7 +98,7 @@ function renderAdjustmentsSection(adjustments, period, messageText = '', message
     '<label class="form-field"><span>Account</span><input id="forecast-adjustment-account" type="text" placeholder="Account"></label>' +
     '<label class="form-field"><span>Notes</span><input id="forecast-adjustment-notes" type="text" placeholder="Notes"></label>' +
     '</div>' +
-    '<div class="settings-actions"><button class="button button-primary" data-action="forecast-add-adjustment">Add Adjustment</button></div>' +
+    '<div class="settings-actions"><button type="button" class="button button-primary" data-action="forecast-add-adjustment">Add Adjustment</button></div>' +
     '<div id="forecast-adjustment-message" class="settings-message ' + (messageText ? escapeHtml(messageType) : '') + '">' + (messageText ? escapeHtml(messageText) : '') + '</div>' +
     '<div class="table-wrap"><table class="table"><thead><tr><th>Date</th><th>Label</th><th>Type</th><th>Amount</th><th>Account</th><th>Notes</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
     '</section>'
