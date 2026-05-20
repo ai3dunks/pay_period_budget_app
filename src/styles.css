@@ -4276,3 +4276,213 @@ body {
   color: #9f1239;
   margin: 0 0 10px;
 }
+
+/* ─── Transactions Inbox Workflow ─────────────────────────────────────────── */
+
+.transactions-inbox-page {
+  display: grid;
+  gap: 16px;
+}
+
+.transaction-inbox-summary {
+  grid-template-columns: repeat(5, minmax(150px, 1fr));
+}
+
+.transaction-inbox-summary .fintech-kpi h3 {
+  font-size: clamp(20px, 2vw, 30px);
+}
+
+.transactions-inbox-shell {
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.transactions-inbox-main {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.transaction-filter-rail {
+  position: sticky;
+  top: 18px;
+  display: grid;
+  gap: 16px;
+  padding: 16px;
+}
+
+.transaction-filter-rail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.transaction-filter-rail-header h3 {
+  margin: 2px 0 0;
+  font-size: 18px;
+}
+
+.transaction-rail-search {
+  margin: 0;
+}
+
+.transaction-rail-search input {
+  width: 100%;
+  min-height: 40px;
+}
+
+.transaction-rail-group {
+  display: grid;
+  gap: 8px;
+}
+
+.transaction-filter-rail .account-tabs {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  margin: 0;
+}
+
+.transaction-filter-rail .account-tab-button {
+  justify-content: flex-start;
+  min-height: 34px;
+  padding: 7px 10px;
+}
+
+.transaction-rail-actions {
+  display: grid;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.transaction-rail-actions .button {
+  justify-content: flex-start;
+}
+
+.transaction-table-wrap {
+  max-height: calc(100vh - 240px);
+}
+
+.transaction-inbox-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.transaction-inbox-table td {
+  vertical-align: middle;
+}
+
+.transaction-mobile-list {
+  display: none;
+}
+
+.transaction-mobile-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+}
+
+.transaction-mobile-card-top {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.transaction-mobile-select {
+  padding-top: 4px;
+}
+
+.transaction-mobile-main {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.transaction-mobile-main span:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.transaction-mobile-main small {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transaction-mobile-meta,
+.transaction-mobile-classification,
+.transaction-mobile-status,
+.transaction-mobile-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.transaction-mobile-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+@media (max-width: 1100px) {
+  .transaction-inbox-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .transactions-inbox-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .transaction-filter-rail {
+    position: static;
+  }
+
+  .transaction-filter-rail .account-tabs {
+    display: flex;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
+  .transaction-filter-rail .account-tab-button {
+    white-space: nowrap;
+  }
+
+  .transaction-rail-actions {
+    display: flex;
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 720px) {
+  .transaction-inbox-summary {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .transaction-table-wrap {
+    display: none;
+  }
+
+  .transaction-mobile-list {
+    display: grid;
+    gap: 10px;
+  }
+
+  .transaction-filter-rail {
+    padding: 14px;
+  }
+}

@@ -25,9 +25,11 @@ export const tabs = [
   { id: 'transactions', label: 'Transactions', mobile: true },
   { id: 'paycheck-planner', label: 'Budget Plan' },
   { id: 'recurring-bills', label: 'Bills', mobile: true },
+  { id: 'expenses', label: 'Expenses' },
   { id: 'transfers', label: 'Transfers' },
   { id: 'debt-snowball', label: 'Debt' },
   { id: 'reports', label: 'Reports' },
+  { id: 'master-lists', label: 'Master Lists' },
   { id: 'settings', label: 'Settings', mobile: true },
 ];
 

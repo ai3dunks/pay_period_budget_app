@@ -441,10 +441,11 @@ export async function renderTransactions(container) {
   }
 
   _paint(body, period);
+  container.dataset.renderedPage = 'transactions';
 }
 
 function _renderFrame(container) {
-  if (container.querySelector('#page-body')) return;
+  if (container.dataset.renderedPage === 'transactions' && container.querySelector('#page-body')) return;
   const period = getActivePeriod();
   const syncConnected = !!_txPlaidStatus?.connected;
   container.innerHTML =
@@ -631,31 +632,22 @@ function _paint(body, period) {
       : '') +
     (_txMessage ? '<p class="settings-message ' + (_txMessageType === 'error' ? 'error' : 'success') + '">' + escapeHtml(_txMessage) + '</p>' : '') +
     '<section class="dashboard-kpi-grid transaction-inbox-summary">' +
+    '<article class="card fintech-kpi"><p class="metric-label">Period</p><h3>' + escapeHtml(_viewMode === 'period' ? getPeriodLabel(period) : 'All Synced') + '</h3><p>' + escapeHtml(accountScopeLabel.replace(/\.$/, '')) + '</p></article>' +
     '<article class="card fintech-kpi fintech-kpi--' + (needsReviewCount ? 'warning' : 'good') + '"><p class="metric-label">Needs Review</p><h3>' + needsReviewCount + '</h3><p>Missing review, type, or category</p></article>' +
     '<article class="card fintech-kpi fintech-kpi--' + (pendingCount ? 'warning' : 'good') + '"><p class="metric-label">Pending</p><h3>' + pendingCount + '</h3><p>May change when posted</p></article>' +
     '<article class="card fintech-kpi"><p class="metric-label">Split</p><h3>' + splitCount + '</h3><p>Parent transactions with split lines</p></article>' +
     '<article class="card fintech-kpi fintech-kpi--good"><p class="metric-label">Reviewed</p><h3>' + reviewedCount + '</h3><p>Cleared in this view</p></article>' +
     '</section>' +
-    (txFeat('showBankTabs') ? _renderAccountTabs() : '') +
-    _renderReviewTabs() +
-    '<section class="card transaction-filter-toolbar">' +
-    '<div><strong>Transaction filters</strong><p class="card-description">' + escapeHtml(modeLabel + ' ' + accountScopeLabel) + '</p></div>' +
-    '<div class="filter-actions">' +
-    '<button type="button" class="button button-secondary" data-action="open-transaction-filters">Filters</button>' +
-    '<button type="button" class="button button-secondary" data-action="preview-rules">Preview Rules' + (_smartRules.length ? ' (' + String(_smartRules.length) + ')' : '') + '</button>' +
-    '<button type="button" class="button button-secondary" data-action="apply-rules">Apply Rules</button>' +
-    '<button type="button" class="button button-secondary" data-action="manage-rules">Manage Rules</button>' +
-    '<button type="button" class="button button-secondary" data-action="show-all-synced">Show all synced</button>' +
-    '<button type="button" class="button button-secondary" data-action="use-budget-period">Use budget period</button>' +
-    '</div>' +
-    '</section>' +
     (_rows.length && needsReviewCount === 0 ? '<section class="dashboard-alert success"><strong>Inbox clear</strong><div>All visible transactions are reviewed for this pay period.</div></section>' : '') +
+    '<section class="transactions-inbox-shell">' +
+    _renderInboxFilterRail({ txFeat, modeLabel, accountScopeLabel }) +
+    '<div class="transactions-inbox-main">' +
     (selectedCount > 0 ? _renderBulkActionBar(selectedCount) : '') +
     _renderPaginationControls();
 
   const hasActiveFilters = Boolean(_filters.search || _filters.accountId || _filters.startDate || _filters.exclusiveEndDate || _filters.type || _filters.category || _filters.reviewed || _filters.pending || _filters.showIgnored || _viewMode !== 'period');
   const tableHtml = _rows.length
-    ? _renderTable()
+    ? _renderTransactionList()
     : '<section class="card empty-state-card"><h3>' + (hasActiveFilters ? 'No matching transactions' : 'No transactions found') + '</h3><p class="empty-state">' + (hasActiveFilters ? 'Try clearing filters or changing the date range.' : 'Sync your bank or adjust your filters.') + '</p><div class="filter-actions">' + (hasActiveFilters ? '<button type="button" class="button button-primary" data-action="clear-transaction-filters">Clear filters</button>' : '<button type="button" class="button button-primary" data-action="sync-transactions">Sync Transactions</button>') + '</div></section>';
   const modalTx = _getReviewModalTransaction();
   const modalDraft = modalTx ? normalizeReviewDraft(modalTx, _reviewDraft || {}) : null;
@@ -666,7 +658,7 @@ function _paint(body, period) {
   const filterModalHtml = _filtersModalOpen ? _renderFiltersModalHtml({ categoryFilterOptions, txFeat }) : '';
   const ruleEditorHtml = renderRuleEditorModalHtml(_ruleEditorAccounts, { showDraftPreviewButton: true });
   const rulePreviewHtml = _rulePreviewState ? renderRulePreviewTableHtml(_rulePreviewState, { title: _rulePreviewState.title || 'Rule Preview' }) : '';
-  body.innerHTML = headerHtml + tableHtml + _renderPaginationControls('pagination-bottom') + '</section>' + filterModalHtml + modalHtml + splitModalHtml + ruleEditorHtml + rulePreviewHtml;
+  body.innerHTML = headerHtml + tableHtml + _renderPaginationControls('pagination-bottom') + '</div></section></section>' + filterModalHtml + modalHtml + splitModalHtml + ruleEditorHtml + rulePreviewHtml;
   body.dataset.loaded = '1';
   logRenderTime('transactions.paint', renderStartedAt);
 }
@@ -685,6 +677,30 @@ function _renderBulkActionBar(selectedCount) {
     '</select></label>' +
     '<button type="button" class="button button-secondary button-sm" data-action="bulk-clear-selection">Clear Selection</button>' +
     '</section>'
+  );
+}
+
+function _renderInboxFilterRail({ txFeat, modeLabel, accountScopeLabel }) {
+  return (
+    '<aside class="card transaction-filter-rail" aria-label="Transaction inbox filters">' +
+    '<div class="transaction-filter-rail-header">' +
+    '<div><p class="metric-label">Inbox</p><h3>Review Queue</h3></div>' +
+    '<button type="button" class="button button-secondary button-sm" data-action="open-transaction-filters">Filters</button>' +
+    '</div>' +
+    '<label class="form-field transaction-rail-search"><span>Search</span><input type="search" id="tx-search" value="' + escapeHtml(_filters.search) + '" placeholder="Merchant, account, category"></label>' +
+    (txFeat('showBankTabs') ? '<div class="transaction-rail-group"><p class="metric-label">Accounts</p>' + _renderAccountTabs() + '</div>' : '') +
+    '<div class="transaction-rail-group"><p class="metric-label">Review status</p>' + _renderReviewTabs() + '</div>' +
+    '<div class="transaction-rail-group"><p class="metric-label">Pending</p>' + _renderPendingTabs() + '</div>' +
+    '<div class="transaction-rail-actions">' +
+    '<button type="button" class="button button-secondary button-sm" data-action="preview-rules">Preview Rules' + (_smartRules.length ? ' (' + String(_smartRules.length) + ')' : '') + '</button>' +
+    '<button type="button" class="button button-secondary button-sm" data-action="apply-rules">Apply Rules</button>' +
+    '<button type="button" class="button button-secondary button-sm" data-action="manage-rules">Manage Rules</button>' +
+    '<button type="button" class="button button-secondary button-sm" data-action="show-all-synced">Show all synced</button>' +
+    '<button type="button" class="button button-secondary button-sm" data-action="use-budget-period">Use budget period</button>' +
+    '</div>' +
+    '<p class="card-description">' + escapeHtml(modeLabel + ' ' + accountScopeLabel) + '</p>' +
+    (_pendingHiddenBySettings ? '<p class="card-description">Some pending transactions are hidden by Settings.</p>' : '') +
+    '</aside>'
   );
 }
 
@@ -864,12 +880,34 @@ function _renderReviewTabs() {
   return '<div class="account-tabs review-tabs" role="tablist" aria-label="Filter transactions by review status">' + html + '</div>';
 }
 
+function _renderPendingTabs() {
+  const tabs = [
+    { id: '', label: 'All' },
+    { id: 'true', label: 'Pending' },
+    { id: 'false', label: 'Posted' },
+  ];
+  const html = tabs.map((tab) => {
+    const isActive = String(_filters.pending || '') === tab.id;
+    return (
+      '<button type="button" class="button button-secondary account-tab-button' + (isActive ? ' active' : '') + '" data-action="select-pending-tab" data-pending="' + escapeHtml(tab.id) + '">' +
+      escapeHtml(tab.label) +
+      '</button>'
+    );
+  }).join('');
+  return '<div class="account-tabs pending-tabs" role="tablist" aria-label="Filter transactions by pending status">' + html + '</div>';
+}
+
+function _formatTransactionAmount(amount) {
+  const absolute = Math.abs(Number(amount || 0)).toFixed(2);
+  return Number(amount || 0) < 0 ? '-$' + absolute : '+$' + absolute;
+}
+
+function _renderTransactionList() {
+  return _renderTable() + _renderMobileCards();
+}
+
 function _renderTable() {
   const showRawPlaidDetails = isFeatureEnabled(_txCcSettings, 'transactions', 'showRawPlaidDetails');
-  const formatAmount = (amount) => {
-    const absolute = Math.abs(Number(amount || 0)).toFixed(2);
-    return Number(amount || 0) < 0 ? '-$' + absolute : '+$' + absolute;
-  };
 
   const rowsHtml = _rows.map((row) => {
     const hasSplits = hasSplit(row);
@@ -888,7 +926,7 @@ function _renderTable() {
       '<td>' + escapeHtml(row.date || '') + '</td>' +
       '<td><strong>' + escapeHtml(getMerchantName(row)) + '</strong>' + (getRawDescription(row) ? '<br><small>' + escapeHtml(getRawDescription(row)) + '</small>' : '') + (splitBadge ? '<br>' + splitBadge : '') + '</td>' +
       '<td>' + escapeHtml(row.account_name || '') + (row.mask ? ' (\u2022' + escapeHtml(row.mask) + ')' : '') + (showRawPlaidDetails ? '<br><small>' + escapeHtml(row.institution_name || '') + '</small>' : '') + '</td>' +
-      '<td class="amount-cell ' + (Number(row.amount || 0) < 0 ? 'amount-expense' : 'amount-income') + '">' + escapeHtml(formatAmount(row.amount)) + '</td>' +
+      '<td class="amount-cell ' + (Number(row.amount || 0) < 0 ? 'amount-expense' : 'amount-income') + '">' + escapeHtml(_formatTransactionAmount(row.amount)) + '</td>' +
       '<td>' + (hasFinalSplits ? '<span class="muted-note">-</span>' : (row.type ? '<span class="type-badge">' + escapeHtml(row.type) + '</span>' : '<span class="muted-note">-</span>')) + '</td>' +
       '<td>' + (hasFinalSplits ? '<span class="muted-note">-</span>' : (row.category ? '<span class="category-badge">' + escapeHtml(row.category) + '</span>' : '<span class="muted-note">-</span>')) + '</td>' +
       '<td class="transaction-status-cell">' + renderStatusPills(row) + '</td>' +
@@ -921,6 +959,37 @@ function _renderTable() {
   }).join('');
 
   return '<div class="table-wrap transaction-table-wrap"><table class="table transaction-inbox-table"><thead><tr><th><input type="checkbox" data-action="toggle-all-transaction-selection" aria-label="Select all transactions"' + (_rows.length && _selectedTransactionIds.size === _rows.length ? ' checked' : '') + '></th><th>Date</th><th>Merchant</th><th>Account</th><th>Amount</th><th>Type</th><th>Category</th><th>Status</th><th>Actions</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
+}
+
+function _renderMobileCards() {
+  const cards = _rows.map((row) => {
+    const rawDescription = getRawDescription(row);
+    return (
+      '<article class="card transaction-mobile-card">' +
+      '<div class="transaction-mobile-card-top">' +
+      '<label class="transaction-mobile-select"><input type="checkbox" data-action="toggle-transaction-selection" data-id="' + escapeHtml(row.id) + '"' + (_selectedTransactionIds.has(row.id) ? ' checked' : '') + ' aria-label="Select transaction"></label>' +
+      '<button type="button" class="transaction-mobile-main" data-action="review-transaction" data-id="' + escapeHtml(row.id) + '">' +
+      '<span><strong>' + escapeHtml(getMerchantName(row)) + '</strong>' + (rawDescription ? '<small>' + escapeHtml(rawDescription) + '</small>' : '') + '</span>' +
+      '<span class="amount-cell ' + (Number(row.amount || 0) < 0 ? 'amount-expense' : 'amount-income') + '">' + escapeHtml(_formatTransactionAmount(row.amount)) + '</span>' +
+      '</button>' +
+      '</div>' +
+      '<div class="transaction-mobile-meta">' +
+      '<span>' + escapeHtml(row.date || '-') + '</span>' +
+      '<span>' + escapeHtml(row.account_name || 'Account') + (row.mask ? ' (•' + escapeHtml(row.mask) + ')' : '') + '</span>' +
+      '</div>' +
+      '<div class="transaction-mobile-classification">' +
+      (row.type ? '<span class="type-badge">' + escapeHtml(row.type) + '</span>' : '<span class="muted-note">No type</span>') +
+      (row.category ? '<span class="category-badge">' + escapeHtml(row.category) + '</span>' : '<span class="muted-note">No category</span>') +
+      '</div>' +
+      '<div class="transaction-mobile-status">' + renderStatusPills(row) + '</div>' +
+      '<div class="transaction-mobile-actions">' +
+      '<button type="button" class="button button-primary button-sm" data-action="review-transaction" data-id="' + escapeHtml(row.id) + '">Review</button>' +
+      (isFeatureEnabled(_txCcSettings, 'transactions', 'showSplitTransactionTools') ? '<button type="button" class="button button-secondary button-sm" data-action="open-split-editor" data-id="' + escapeHtml(row.id) + '">Split</button>' : '') +
+      '</div>' +
+      '</article>'
+    );
+  }).join('');
+  return '<div class="transaction-mobile-list">' + cards + '</div>';
 }
 
 function _calculateSplitTotals(parentAmount, splitLines) {
@@ -1043,6 +1112,13 @@ function _attachDelegation(body) {
     }
     if (action === 'select-review-tab') {
       _filters.reviewed = String(button.dataset.reviewed || 'false') === 'true' ? 'true' : 'false';
+      _selectedTransactionIds = new Set();
+      await _fetchAndRender(period, 0);
+      return;
+    }
+    if (action === 'select-pending-tab') {
+      const nextPending = String(button.dataset.pending || '');
+      _filters.pending = _pendingHiddenBySettings && nextPending === '' ? 'false' : nextPending;
       _selectedTransactionIds = new Set();
       await _fetchAndRender(period, 0);
       return;

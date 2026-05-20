@@ -933,10 +933,10 @@ export function handleRuleEditorInput(e) {
 
 function _renderFrame(container) {
   const existingBody = container.querySelector('#page-body');
-  if (existingBody) return existingBody;
+  if (container.dataset.renderedPage === 'settings' && existingBody) return existingBody;
   container.innerHTML =
     '<header class="page-header">' +
-    '<div class="page-header-main"><h2 class="page-title">Settings</h2><p class="page-description">A command center for banks, accounts, rules, lists, health, and privacy tools.</p></div>' +
+    '<div class="page-header-main"><h2 class="page-title">Settings</h2><p class="page-description">Manage bank connections, transaction rules, account labels, feature visibility, and data tools.</p></div>' +
     '<div class="page-header-right"><span class="status-badge">Private local data</span></div>' +
     '</header>' +
     '<div id="page-body" class="page-body"></div>';
