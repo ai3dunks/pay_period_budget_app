@@ -9,6 +9,7 @@ export const VALID_TRANSACTION_TYPES = [
   'Bills',
   'Wants',
   'Transfer',
+  'Refund',
   'Debt Payment',
   'Ignore',
 ];
@@ -20,6 +21,7 @@ const VALID_CATEGORIES_BY_TYPE = {
   Bills: ['Needs', 'Wants', 'Debts/Savings'],
   Wants: ['Josh', 'Taylor', 'Split'],
   Transfer: ['In', 'Out'],
+  Refund: ['Refund'],
   'Debt Payment': ['Additional Payment'],
   Ignore: ['Ignore'],
   // Expense categories are dynamic (from expense list) — not validated here

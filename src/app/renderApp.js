@@ -28,6 +28,7 @@ import { renderCashFlowForecast } from '../ui/cashFlowForecast.js';
 import { syncTransactions } from '../api/plaidApi.js';
 import { API_BASE } from '../api/client.js';
 import { loadCommandCenterSettings, isPageEnabled, PAGE_META } from '../utils/commandCenter.js';
+import { startHourlyTransactionAutoSync } from '../utils/autoTransactionSync.js';
 
 // Map tab IDs to Command Center page keys
 const TAB_PAGE_KEY = {
@@ -58,6 +59,9 @@ export function bootApp() {
   _renderPeriodSelector();
   renderActivePage();
   _attachGlobalListeners();
+  startHourlyTransactionAutoSync({
+    onSynced: () => emitAppEvent('budget:transactions-updated'),
+  });
 
   // Re-render on rule editor open/close
   window.addEventListener('app:page-needs-render', () => {

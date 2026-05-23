@@ -155,7 +155,7 @@ function getIncomeSummary(state) {
   const expenseBudget = calculateExpenseBudget(state?.masterList?.expenseList || []);
   const recurringBillsDue = recurringDue.billsDue.reduce((sum, bill) => sum + toNumber(bill.amount, 0), 0);
 
-  const budgetTotal = toNumber(incomeInfo.value, 0) + bonusIncome + otherIncome;
+  const budgetTotal = toNumber(incomeInfo.value, 0) + bonusIncome;
   const moneyNeededForBills = recurringBillsDue;
   const alreadyPaid = recurringDue.billsDueWithStatus
     .filter((bill) => bill.status?.paid)

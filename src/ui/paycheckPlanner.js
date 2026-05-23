@@ -1102,7 +1102,7 @@ async function renderLegacyPaycheckPlanner(container, period, periodLabel) {
 
     const summaryCards =
       '<section class="summary-grid compact planner-summary-grid">' +
-      '<article class="card stat-card compact" title="Income detected or entered for this budget period."><p class="label">Budget Total</p><h3 class="value">' + escapeHtml(formatCurrencyValue(budgetTotal)) + '</h3><p class="hint">Regular + Bonus + Other Income</p></article>' +
+      '<article class="card stat-card compact" title="Income detected or entered for this budget period."><p class="label">Budget Total</p><h3 class="value">' + escapeHtml(formatCurrencyValue(budgetTotal)) + '</h3><p class="hint">Regular paycheck + bonus</p></article>' +
       '<article class="card stat-card compact" title="Detected Cisco payroll or manual override for this budget period."><p class="label">Regular Paycheck</p><h3 class="value">' + escapeHtml(formatCurrencyValue(regularPaycheck)) + '</h3><p class="hint">Source: ' + escapeHtml(sourceLabel) + '</p></article>' +
       '<article class="card stat-card compact" title="Active recurring bills due inside ' + escapeHtml(periodLabel) + '."><p class="label">Recurring Bills Due</p><h3 class="value">' + escapeHtml(formatCurrencyValue(recurringBillsDue)) + '</h3><p class="hint">Counted bills: ' + escapeHtml(String(billsDue.length)) + '</p></article>' +
       '<article class="card stat-card compact" title="Bills marked paid or auto-paid for this budget period."><p class="label">Already Paid</p><h3 class="value">' + escapeHtml(formatCurrencyValue(alreadyPaid)) + '</h3><p class="hint">Paid bills only</p></article>' +

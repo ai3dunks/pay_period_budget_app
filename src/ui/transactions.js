@@ -35,7 +35,7 @@ import {
   transactionTextMatchesRule,
 } from '../utils/transactionRules.js';
 
-const TRANSACTION_TYPES_FOR_FILTER = ['Income', 'Expense', 'Bills', 'Wants', 'Transfer', 'Debt Payment', 'Ignore'];
+const TRANSACTION_TYPES_FOR_FILTER = ['Income', 'Expense', 'Bills', 'Wants', 'Transfer', 'Refund', 'Debt Payment', 'Ignore'];
 const PAGE_SIZE_OPTIONS = [50, 100, 250, 500];
 const SEARCH_DEBOUNCE_MS = 300;
 

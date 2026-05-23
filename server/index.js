@@ -19,6 +19,7 @@ import debtSnowballRoutes from './routes/debtSnowball.js';
 import transfersRoutes from './routes/transfers.js';
 import cashFlowRoutes from './routes/cashFlow.js';
 import expenseFundingRoutes from './routes/expenseFunding.js';
+import { startHourlyTransactionAutoSync } from './autoSync.js';
 
 const app = express();
 const PORT = parseInt(process.env.BACKEND_PORT || '8787', 10);
@@ -62,4 +63,5 @@ app.use((err, _req, res, next) => {
 
 app.listen(PORT, HOST, () => {
   console.log(`Budget dashboard backend running on http://${HOST}:${PORT}`);
+  startHourlyTransactionAutoSync({ host: HOST, port: PORT });
 });

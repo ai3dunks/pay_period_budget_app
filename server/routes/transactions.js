@@ -13,6 +13,7 @@ const VALID_TYPES = new Set([
   'Bills',
   'Wants',
   'Transfer',
+  'Refund',
   'Debt Payment',
   'Ignore',
 ]);

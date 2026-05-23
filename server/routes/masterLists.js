@@ -128,7 +128,7 @@ router.get('/', (_req, res) => {
       .map(toExpenseItem);
 
     const recurringBillsList = db
-      .prepare('SELECT * FROM recurring_bills_list_items ORDER BY display_order ASC, due_day ASC, name COLLATE NOCASE ASC, amount ASC')
+      .prepare('SELECT * FROM recurring_bills_list_items ORDER BY due_day ASC, name COLLATE NOCASE ASC, amount ASC, display_order ASC')
       .all()
       .map(toRecurringBillItem);
 
@@ -227,11 +227,17 @@ router.patch('/expenses/:id', (req, res) => {
 
 router.delete('/expenses/:id', (req, res) => {
   const { id } = req.params;
+  const hardDelete = req.query?.hard === 'true' || req.query?.hard === '1';
 
   try {
     const existing = getRow('expense_list_items', id);
     if (!existing) {
       return res.status(404).json({ error: 'Expense item not found.' });
+    }
+
+    if (hardDelete) {
+      db.prepare('DELETE FROM expense_list_items WHERE id = ?').run(id);
+      return res.json({ id, deleted: true });
     }
 
     db.prepare('UPDATE expense_list_items SET active = 0, updated_at = ? WHERE id = ?').run(
@@ -374,11 +380,21 @@ router.patch('/recurring-bills/:id', (req, res) => {
 
 router.delete('/recurring-bills/:id', (req, res) => {
   const { id } = req.params;
+  const hardDelete = req.query?.hard === 'true' || req.query?.hard === '1';
 
   try {
     const existing = getRow('recurring_bills_list_items', id);
     if (!existing) {
       return res.status(404).json({ error: 'Recurring bill not found.' });
+    }
+
+    if (hardDelete) {
+      const removeBill = db.transaction(() => {
+        db.prepare('DELETE FROM recurring_bill_status WHERE recurring_bill_id = ?').run(id);
+        db.prepare('DELETE FROM recurring_bills_list_items WHERE id = ?').run(id);
+      });
+      removeBill();
+      return res.json({ id, deleted: true });
     }
 
     db.prepare('UPDATE recurring_bills_list_items SET active = 0, updated_at = ? WHERE id = ?').run(

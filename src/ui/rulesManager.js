@@ -17,6 +17,7 @@ export const TRANSACTION_TYPES = [
   'Bills',
   'Wants',
   'Transfer',
+  'Refund',
   'Debt Payment',
   'Ignore',
 ];
@@ -27,6 +28,7 @@ const FALLBACK_CATEGORY_BY_TYPE = {
   Bills: ['Needs', 'Wants', 'Debts/Savings'],
   Wants: ['Josh', 'Taylor', 'Split'],
   Transfer: ['In', 'Out'],
+  Refund: ['Refund'],
   'Debt Payment': ['Additional Payment'],
   Ignore: ['Ignore'],
 };
@@ -69,6 +71,7 @@ export function defaultCategoryForType(type, amount = 0) {
   if (type === 'Expense') return getCategoryOptionsForType('Expense')[0] || 'Misc';
   if (type === 'Wants') return 'Split';
   if (type === 'Transfer') return amount >= 0 ? 'In' : 'Out';
+  if (type === 'Refund') return 'Refund';
   if (type === 'Income') return 'Other Income';
   if (type === 'Bills') return 'Needs';
   if (type === 'Debt Payment') return 'Additional Payment';

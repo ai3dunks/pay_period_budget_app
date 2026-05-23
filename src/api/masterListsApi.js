@@ -36,6 +36,17 @@ function mapBill(item) {
   };
 }
 
+function sortRecurringBillsByDueDate(rows = []) {
+  return rows.slice().sort((a, b) => {
+    const dueA = Number.isFinite(Number(a.dueDay)) ? Number(a.dueDay) : 999;
+    const dueB = Number.isFinite(Number(b.dueDay)) ? Number(b.dueDay) : 999;
+    if (dueA !== dueB) return dueA - dueB;
+    const nameCompare = String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' });
+    if (nameCompare !== 0) return nameCompare;
+    return Number(a.amount || 0) - Number(b.amount || 0);
+  });
+}
+
 export async function getMasterLists(forceReload = false) {
   if (_loaded && !forceReload) return _cache;
   try {
@@ -44,7 +55,9 @@ export async function getMasterLists(forceReload = false) {
       loaded: true,
       error: '',
       expenseList: Array.isArray(data.expenseList) ? data.expenseList.map(mapItem) : [],
-      recurringBillsList: Array.isArray(data.recurringBillsList) ? data.recurringBillsList.map(mapBill) : [],
+      recurringBillsList: sortRecurringBillsByDueDate(
+        Array.isArray(data.recurringBillsList) ? data.recurringBillsList.map(mapBill) : []
+      ),
     };
     _loaded = true;
   } catch (err) {
@@ -76,6 +89,10 @@ export function toggleExpenseItemActive(id, activeNow) {
     : apiPatch('/api/master-lists/expenses/' + encodeURIComponent(id), { active: true });
 }
 
+export function deleteExpenseItem(id) {
+  return apiDelete('/api/master-lists/expenses/' + encodeURIComponent(id) + '?hard=true');
+}
+
 export function createRecurringBill(form) {
   return apiPost('/api/master-lists/recurring-bills', form);
 }
@@ -88,4 +105,8 @@ export function toggleRecurringBillActive(id, activeNow) {
   return activeNow
     ? apiDelete('/api/master-lists/recurring-bills/' + encodeURIComponent(id))
     : apiPatch('/api/master-lists/recurring-bills/' + encodeURIComponent(id), { active: true });
+}
+
+export function deleteRecurringBill(id) {
+  return apiDelete('/api/master-lists/recurring-bills/' + encodeURIComponent(id) + '?hard=true');
 }

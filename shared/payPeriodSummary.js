@@ -231,7 +231,10 @@ export function buildPayPeriodSummary({
     allIncomeOrPayrollTransactions.length - periodIncomeOrPayrollTransactions.length;
 
   const detectedPayroll = getDetectedPayrollIncome(periodIncomeOrPayrollTransactions, period, {
-    includePendingTransactions,
+    // Payroll is the anchor for the new pay-period plan. Banks often show the
+    // deposit as pending on payday, so keep using it for assignment planning
+    // while other pending spending remains controlled by Safe Money settings.
+    includePendingTransactions: true,
   });
 
   const payrollTransactions = (detectedPayroll.transactions || []).map((row) => ({
@@ -277,7 +280,9 @@ export function buildPayPeriodSummary({
       : hasAutoDetectedIncome
         ? toNumber(autoDetectedIncome, 0)
         : 0;
-  const budgetIncome = regularPaycheck + bonusIncome + otherIncome;
+  // Budget income is the paycheck money available to assign. Refunds and other
+  // one-off credits stay visible as Other Income but do not inflate the paycheck.
+  const budgetIncome = regularPaycheck + bonusIncome;
   const incomeSourceLabel = hasManualIncome
     ? 'Manual override'
     : hasDetectedPayroll || hasAutoDetectedIncome
@@ -380,7 +385,14 @@ export function buildPayPeriodSummary({
   const overBudgetCount = categoryRows.filter((row) => row.overBudget).length;
 
   // ── Wants + transfers ──────────────────────────────────────────────────────
-  const wantsActuals = calculateWantsActuals({ transactions: periodTransactions, period, transferTargets });
+  const wantsPlanningTransactions = (transactions || []).filter((row) => {
+    if (!row || row.ignored) return false;
+    if (normalizeText(row.type) !== 'wants') return false;
+    if (!isInSelectedPeriod(row.date, period)) return false;
+    if (!row.pending) return true;
+    return row.reviewed && String(row.category || '').trim();
+  });
+  const wantsActuals = calculateWantsActuals({ transactions: wantsPlanningTransactions, period, transferTargets });
 
   const splitSummary = calculateBudgetSplit({
     budgetIncome,

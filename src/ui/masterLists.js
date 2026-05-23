@@ -4,14 +4,17 @@
 
 import { escapeHtml } from '../utils/dom.js';
 import { formatCurrency, normalizeMatchWordsInput } from '../utils/formatters.js';
+import { withPreservedRenderState } from '../utils/renderStability.js';
 import {
   getMasterLists,
   createExpenseItem,
   updateExpenseItem,
   toggleExpenseItemActive,
+  deleteExpenseItem,
   createRecurringBill,
   updateRecurringBill,
   toggleRecurringBillActive,
+  deleteRecurringBill,
 } from '../api/masterListsApi.js';
 
 // ── page-level state ────────────────────────────────────────────────────────
@@ -55,12 +58,7 @@ function _paint(body, data) {
   const isExpense = _uiState.activeTab === 'expense';
   const rows = isExpense ? data.expenseList : data.recurringBillsList;
   const tableRows = rows.length
-    ? rows.map((row) => {
-        if (_uiState.editingId === row.id && _uiState.editingType === _uiState.activeTab) {
-          return isExpense ? _expenseEditRow(row) : _billEditRow(row);
-        }
-        return isExpense ? _expenseRow(row) : _billRow(row);
-      }).join('')
+    ? rows.map((row) => isExpense ? _expenseRow(row) : _billRow(row)).join('')
     : (isExpense ? '<tr><td colspan="5">No expenses yet.</td></tr>' : '<tr><td colspan="10">No recurring bills yet.</td></tr>');
 
   body.innerHTML =
@@ -73,7 +71,8 @@ function _paint(body, data) {
     (isExpense
       ? '<thead><tr><th>Name</th><th>Budget Amount</th><th>Active</th><th>Notes</th><th>Actions</th></tr></thead>'
       : '<thead><tr><th>Name</th><th>Category</th><th>Due</th><th>Amount</th><th>Paid From</th><th>Match Words</th><th>Autopay</th><th>Active</th><th>Notes</th><th>Actions</th></tr></thead>') +
-    '<tbody>' + tableRows + '</tbody></table></div></section>';
+    '<tbody>' + tableRows + '</tbody></table></div></section>' +
+    _editorDrawer(data);
 }
 
 function _tabsHtml() {
@@ -118,6 +117,7 @@ function _expenseRow(row) {
     '<td class="inline-actions">' +
     '<button type="button" class="button button-secondary button-sm" data-action="master-expense-edit" data-id="' + escapeHtml(row.id) + '">Edit</button>' +
     '<button type="button" class="button button-secondary button-sm" data-action="master-expense-toggle-active" data-id="' + escapeHtml(row.id) + '" data-active="' + (row.active ? '1' : '0') + '">' + (row.active ? 'Deactivate' : 'Reactivate') + '</button>' +
+    '<button type="button" class="button button-secondary button-sm" data-action="master-expense-delete" data-id="' + escapeHtml(row.id) + '" data-name="' + escapeHtml(row.name) + '">Delete</button>' +
     '</td></tr>';
 }
 
@@ -135,11 +135,12 @@ function _billRow(row) {
     '<td class="inline-actions">' +
     '<button type="button" class="button button-secondary button-sm" data-action="master-recurring-edit" data-id="' + escapeHtml(row.id) + '">Edit</button>' +
     '<button type="button" class="button button-secondary button-sm" data-action="master-recurring-toggle-active" data-id="' + escapeHtml(row.id) + '" data-active="' + (row.active ? '1' : '0') + '">' + (row.active ? 'Deactivate' : 'Reactivate') + '</button>' +
+    '<button type="button" class="button button-secondary button-sm" data-action="master-recurring-delete" data-id="' + escapeHtml(row.id) + '" data-name="' + escapeHtml(row.name) + '">Delete</button>' +
     '</td></tr>';
 }
 
-function _expenseEditRow(row) {
-  return '<tr><td colspan="5"><div class="master-form"><div class="form-grid">' +
+function _expenseEditorForm(row) {
+  return '<div class="master-form master-editor-form"><div class="form-grid">' +
     '<label class="form-field"><span>Name</span><input id="expense-edit-name" value="' + escapeHtml(row.name) + '"></label>' +
     '<label class="form-field"><span>Budget Amount</span><input id="expense-edit-budget-amount" type="number" step="0.01" value="' + escapeHtml(String(row.budgetAmount ?? 0)) + '"></label>' +
     '<label class="form-field field-checkbox"><input id="expense-edit-active" type="checkbox"' + (row.active ? ' checked' : '') + '> <span>Active</span></label>' +
@@ -147,11 +148,11 @@ function _expenseEditRow(row) {
     '</div><div class="inline-actions">' +
     '<button type="button" class="button button-primary" data-action="master-expense-save" data-id="' + escapeHtml(row.id) + '">Save</button>' +
     '<button type="button" class="button button-secondary" data-action="master-expense-cancel">Cancel</button>' +
-    '</div></div></td></tr>';
+    '</div></div>';
 }
 
-function _billEditRow(row) {
-  return '<tr><td colspan="10"><div class="master-form"><div class="form-grid">' +
+function _billEditorForm(row) {
+  return '<div class="master-form master-editor-form"><div class="form-grid">' +
     '<label class="form-field"><span>Name</span><input id="recurring-edit-name" value="' + escapeHtml(row.name) + '"></label>' +
     '<label class="form-field"><span>Category</span><select id="recurring-edit-category">' +
     ['Needs', 'Wants', 'Debts/Savings'].map((o) => '<option' + (row.category === o ? ' selected' : '') + '>' + o + '</option>').join('') +
@@ -166,7 +167,29 @@ function _billEditRow(row) {
     '</div><div class="inline-actions">' +
     '<button type="button" class="button button-primary" data-action="master-recurring-save" data-id="' + escapeHtml(row.id) + '">Save</button>' +
     '<button type="button" class="button button-secondary" data-action="master-recurring-cancel">Cancel</button>' +
-    '</div></div></td></tr>';
+    '</div></div>';
+}
+
+function _editorDrawer(data) {
+  if (!_uiState.editingId || !_uiState.editingType) return '';
+  const isExpense = _uiState.editingType === 'expense';
+  const rows = isExpense ? data.expenseList : data.recurringBillsList;
+  const row = (rows || []).find((item) => item.id === _uiState.editingId);
+  if (!row) return '';
+  const title = isExpense ? 'Edit Expense' : 'Edit Recurring Bill';
+  const description = isExpense
+    ? 'Update this expense budget template.'
+    : 'Update this bill template. Saving re-sorts the list by due date.';
+  return '<div class="transaction-drawer-backdrop master-list-editor-backdrop" data-action="' + (isExpense ? 'master-expense-cancel' : 'master-recurring-cancel') + '"></div>' +
+    '<aside class="transaction-drawer master-list-editor-drawer" role="dialog" aria-modal="true" aria-label="' + escapeHtml(title) + '">' +
+    '<header class="transaction-drawer-header">' +
+    '<div><h3>' + escapeHtml(title) + '</h3><p>' + escapeHtml(description) + '</p></div>' +
+    '<button type="button" class="button button-secondary button-sm" data-action="' + (isExpense ? 'master-expense-cancel' : 'master-recurring-cancel') + '">Close</button>' +
+    '</header>' +
+    '<section class="transaction-drawer-section">' +
+    (isExpense ? _expenseEditorForm(row) : _billEditorForm(row)) +
+    '</section>' +
+    '</aside>';
 }
 
 function _activeBadge(active) {
@@ -199,7 +222,11 @@ function _readBillForm(prefix) {
 async function _repaint(container) {
   const data = await getMasterLists(false);
   const body = document.getElementById('page-body');
-  if (body) _paint(body, data);
+  if (body) {
+    await withPreservedRenderState(async () => {
+      _paint(body, data);
+    });
+  }
 }
 
 function _attachDelegation(body, container) {
@@ -218,7 +245,7 @@ function _attachDelegation(body, container) {
     if (action === 'master-list-tab') {
       _uiState = { ..._uiState, activeTab: btn.dataset.listType, editingId: null, editingType: '', error: '', message: '' };
       const data = await getMasterLists(false);
-      _paint(body, data);
+      await withPreservedRenderState(async () => _paint(body, data));
       return;
     }
 
@@ -241,13 +268,13 @@ function _attachDelegation(body, container) {
     if (action === 'master-expense-edit') {
       _uiState = { ..._uiState, editingId: btn.dataset.id, editingType: 'expense' };
       const data = await getMasterLists(false);
-      _paint(body, data);
+      await withPreservedRenderState(async () => _paint(body, data));
       return;
     }
     if (action === 'master-expense-cancel') {
       _uiState = { ..._uiState, editingId: null, editingType: '' };
       const data = await getMasterLists(false);
-      _paint(body, data);
+      await withPreservedRenderState(async () => _paint(body, data));
       return;
     }
     if (action === 'master-expense-save') {
@@ -278,6 +305,21 @@ function _attachDelegation(body, container) {
       } finally { btn.disabled = false; }
       return;
     }
+    if (action === 'master-expense-delete') {
+      const name = btn.dataset.name || 'this expense item';
+      if (!window.confirm('Delete "' + name + '" from Master Lists? This cannot be undone.')) return;
+      btn.disabled = true;
+      try {
+        await deleteExpenseItem(btn.dataset.id);
+        await getMasterLists(true);
+        _uiState = { ..._uiState, editingId: null, editingType: '', message: 'Expense deleted.' };
+        await _repaint(container);
+      } catch (err) {
+        _uiState.error = err.offline ? 'Backend not reachable through the local API proxy.' : err.message;
+        await _repaint(container);
+      } finally { btn.disabled = false; }
+      return;
+    }
 
     if (action === 'master-recurring-add') {
       btn.disabled = true;
@@ -296,13 +338,13 @@ function _attachDelegation(body, container) {
     if (action === 'master-recurring-edit') {
       _uiState = { ..._uiState, editingId: btn.dataset.id, editingType: 'recurring-bills' };
       const data = await getMasterLists(false);
-      _paint(body, data);
+      await withPreservedRenderState(async () => _paint(body, data));
       return;
     }
     if (action === 'master-recurring-cancel') {
       _uiState = { ..._uiState, editingId: null, editingType: '' };
       const data = await getMasterLists(false);
-      _paint(body, data);
+      await withPreservedRenderState(async () => _paint(body, data));
       return;
     }
     if (action === 'master-recurring-save') {
@@ -326,6 +368,21 @@ function _attachDelegation(body, container) {
         await toggleRecurringBillActive(btn.dataset.id, btn.dataset.active === '1');
         await getMasterLists(true);
         _uiState.message = btn.dataset.active === '1' ? 'Recurring bill deactivated.' : 'Recurring bill reactivated.';
+        await _repaint(container);
+      } catch (err) {
+        _uiState.error = err.offline ? 'Backend not reachable through the local API proxy.' : err.message;
+        await _repaint(container);
+      } finally { btn.disabled = false; }
+      return;
+    }
+    if (action === 'master-recurring-delete') {
+      const name = btn.dataset.name || 'this recurring bill';
+      if (!window.confirm('Delete "' + name + '" from Master Lists? This also removes its paid/unpaid status history and cannot be undone.')) return;
+      btn.disabled = true;
+      try {
+        await deleteRecurringBill(btn.dataset.id);
+        await getMasterLists(true);
+        _uiState = { ..._uiState, editingId: null, editingType: '', message: 'Recurring bill deleted.' };
         await _repaint(container);
       } catch (err) {
         _uiState.error = err.offline ? 'Backend not reachable through the local API proxy.' : err.message;

@@ -99,7 +99,7 @@ function renderPrimaryCards(summary, visibility = {}) {
   const payrollLines = [
     summary.income.regularPaycheck ? 'Paycheck ' + formatMoney(summary.income.regularPaycheck) : null,
     summary.income.bonusIncome ? 'Bonus ' + formatMoney(summary.income.bonusIncome) : null,
-    summary.income.otherIncome ? 'Other income ' + formatMoney(summary.income.otherIncome) : null,
+    summary.income.otherIncome ? 'Other income excluded ' + formatMoney(summary.income.otherIncome) : null,
   ].filter(Boolean);
 
   const recurringNext = summary.recurringBills.unpaidRows?.[0] || null;
