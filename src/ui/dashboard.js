@@ -607,7 +607,7 @@ function renderSafeToSpendHero(summary) {
 function getReviewItems(transactions = []) {
   return transactions
     .filter((row) => !row.ignored)
-    .filter((row) => !row.reviewed || row.pending || (Array.isArray(row.split_lines) && row.split_lines.length > 0 && !row.split_is_final))
+    .filter((row) => !row.reviewed || !String(row.type || '').trim() || !String(row.category || '').trim())
     .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
 }
 
