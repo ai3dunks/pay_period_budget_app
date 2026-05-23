@@ -50,57 +50,37 @@ export function getSafeMoneyStatus(amount, safetyBuffer, unavailableReason) {
 /**
  * Calculate Safe to Spend.
  *
- * Safe to Spend = budgetIncome
- *   - recurringBillsLeftToPay
- *   - expenseBudgetRemaining
- *   - requiredTransfersRemaining
- *   - safetyBuffer
+ * Dashboard Safe to Spend = Needs remaining - reserved expense budget.
+ *
+ * Expenses are part of the Needs budget, so this deliberately does not
+ * subtract planned transfers, Wants, Debt/Savings, or the safety buffer.
  */
 export function calculateSafeToSpend(summaryInputs = {}) {
-  const safetyBuffer = Math.max(0, toNumber(summaryInputs.safetyBuffer, DEFAULT_SAFETY_BUFFER));
   const includePendingTransactions = !!summaryInputs.includePendingTransactions;
-
-  const rawBudgetIncome = summaryInputs.budgetIncome;
-  const budgetIncome = rawBudgetIncome !== null && rawBudgetIncome !== undefined
-    ? toNumber(rawBudgetIncome, 0)
-    : null;
-
-  const recurringBillsLeftToPay = Math.max(0, toNumber(summaryInputs.recurringBillsLeftToPay, 0));
+  const rawNeedsRemaining = summaryInputs.needsRemaining ?? summaryInputs.needsRemainingAfterBills;
+  const hasNeedsRemaining = rawNeedsRemaining !== null && rawNeedsRemaining !== undefined;
+  const needsRemaining = hasNeedsRemaining ? toNumber(rawNeedsRemaining, 0) : 0;
   const expenseBudgetRemaining = Math.max(0, toNumber(summaryInputs.expenseBudgetRemaining, 0));
-  const requiredTransfersRemaining = Math.max(0, toNumber(summaryInputs.requiredTransfersRemaining, 0));
 
   const warnings = [];
   const blockers = [];
 
   warnings.push(includePendingTransactions ? 'Pending transactions included.' : 'Pending transactions excluded.');
 
-  if (budgetIncome === null || budgetIncome <= 0) {
-    blockers.push('Budget Income missing');
-  }
-
-  if (recurringBillsLeftToPay > 0) blockers.push(recurringBillsLeftToPay + ' recurring bills unpaid');
+  if (!hasNeedsRemaining) blockers.push('Needs remaining unavailable');
   if (summaryInputs.expenseOverrun > 0) blockers.push('Expense budget overrun');
-  if (requiredTransfersRemaining > 0) blockers.push('Transfer checklist incomplete');
 
-  const amount =
-    (budgetIncome || 0)
-    - recurringBillsLeftToPay
-    - expenseBudgetRemaining
-    - requiredTransfersRemaining
-    - safetyBuffer;
+  const amount = needsRemaining - expenseBudgetRemaining;
 
   return createSafeMoneyResult({
     amount,
-    safetyBuffer,
-    unavailable: budgetIncome === null || budgetIncome <= 0,
+    safetyBuffer: 0,
+    unavailable: !hasNeedsRemaining,
     warnings,
     blockers,
     breakdown: {
-      budgetIncome: budgetIncome || 0,
-      recurringBillsLeftToPay,
+      needsRemaining,
       expenseBudgetRemaining,
-      requiredTransfersRemaining,
-      safetyBuffer,
       finalSafeToSpend: amount,
     },
   });

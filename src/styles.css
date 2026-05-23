@@ -3287,46 +3287,9 @@ body {
   margin-bottom: 0;
 }
 
-.safe-spend-hero {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 26px;
-  border-radius: 16px;
-  background: #111827;
-  color: #FFFFFF;
-  box-shadow: 0 18px 38px rgba(17, 24, 39, 0.14);
-}
-
-.safe-spend-hero .metric-label,
-.safe-spend-hero .card-description {
-  color: #D1D5DB;
-}
-
-.safe-spend-value {
-  margin-top: 8px;
-  font-size: clamp(42px, 7vw, 72px);
-  line-height: 0.95;
-  font-weight: 850;
-  letter-spacing: 0;
-}
-
-.safe-spend-hero--good {
-  background: linear-gradient(135deg, #111827, #0F766E);
-}
-
-.safe-spend-hero--warning {
-  background: linear-gradient(135deg, #111827, #92400E);
-}
-
-.safe-spend-hero--danger {
-  background: linear-gradient(135deg, #111827, #7F1D1D);
-}
-
 .dashboard-kpi-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 12px;
 }
 
@@ -3873,10 +3836,6 @@ body {
   .page-header {
     flex-direction: column;
     align-items: flex-start;
-  }
-
-  .safe-spend-hero {
-    padding: 22px;
   }
 
   .budget-plan-heading {

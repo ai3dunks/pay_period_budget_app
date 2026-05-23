@@ -417,16 +417,13 @@ export function buildPayPeriodSummary({
     period,
   });
 
+  const needsSplitRow = (splitSummary.rows || []).find((row) => row.category === 'Needs');
+  const expenseBudgetRemaining = Math.max(0, budgetTotal - actualTotal);
+
   const safeToSpend = calculateSafeToSpend({
-    budgetIncome,
-    recurringBillsLeftToPay: unpaidTotal,
-    expenseBudgetRemaining: expenseBudget.totalExpenseBudget - actualTotal,
+    needsRemaining: needsSplitRow?.remaining,
+    expenseBudgetRemaining,
     expenseOverrun: Math.max(0, actualTotal - budgetTotal),
-    requiredTransfersRemaining: (transferPlan.targetRows || []).reduce(
-      (sum, row) => sum + Math.max(0, toNumber(row.transferNeeded, 0)),
-      0
-    ),
-    safetyBuffer: safeMoneySettings.safetyBuffer,
     includePendingTransactions,
   });
 
